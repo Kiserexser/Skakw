@@ -12,6 +12,10 @@ base {
 
 repositories {
     mavenCentral()
+    maven {
+        name = "Fabric"
+        url = "https://maven.fabricmc.net/"
+    }
 }
 
 dependencies {
@@ -19,8 +23,8 @@ dependencies {
     mappings "net.fabricmc:yarn:1.20.4+build.3:v2"
     modImplementation "net.fabricmc:fabric-loader:0.15.11"
     
-    // ЭТА СТРОКА НУЖНА - Fabric API:
-    modImplementation "net.fabricmc.fabric-api:fabric-api:0.91.0+1.20.4"
+    // РАБОЧАЯ ВЕРСИЯ FABRIC API:
+    modImplementation "net.fabricmc.fabric-api:fabric-api:0.91.1+1.20.4"
 }
 
 java {
