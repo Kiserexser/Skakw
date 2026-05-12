@@ -1,0 +1,33 @@
+name: Build Mod
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+      
+      - name: Setup Gradle
+        run: |
+          wget https://services.gradle.org/distributions/gradle-8.5-bin.zip
+          unzip gradle-8.5-bin.zip
+          export PATH=$PATH:$(pwd)/gradle-8.5/bin
+      
+      - name: Build
+        run: gradle build --no-daemon
+      
+      - name: Upload JAR
+        uses: actions/upload-artifact@v4
+        with:
+          name: KillAura-Mod
+          path: build/libs/*.jar
