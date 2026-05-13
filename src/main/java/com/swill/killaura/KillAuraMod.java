@@ -1,4 +1,4 @@
-package com.swill.killaura;
+package com.swill.freeze;
 
 import net.fabricmc.api.ModInitializer;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
@@ -6,166 +6,103 @@ import net.fabricmc.fabric.api.client.keybinding.v1.KeyBindingHelper;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.option.KeyBinding;
 import net.minecraft.client.util.InputUtil;
-import net.minecraft.entity.Entity;
-import net.minecraft.entity.LivingEntity;
-import net.minecraft.entity.player.PlayerEntity;
-import net.minecraft.item.SwordItem;
+import net.minecraft.network.packet.c2s.play.PlayerMoveC2SPacket;
 import net.minecraft.text.Text;
-import net.minecraft.util.Hand;
-import net.minecraft.util.math.Box;
 import net.minecraft.util.math.Vec3d;
 import org.lwjgl.glfw.GLFW;
 
-import java.util.List;
 import java.util.Random;
 
-public class KillAuraMod implements ModInitializer {
+public class FreezeMod implements ModInitializer {
 
     private static boolean enabled = false;
-    private static KeyBinding keyBinding;
+    private static KeyBinding toggleKey;
     private static final Random random = new Random();
     
-    private static Entity currentTarget = null;
-    private static int targetSwitchCooldown = 0;
-    
-    // Silent Aim
-    private static float serverYaw = 0;
-    private static float serverPitch = 0;
-    
-    // Плавный поворот
-    private static float targetYaw = 0;
-    private static float targetPitch = 0;
-    private static int rotationTicks = 0;
-    
-    // Тайминг меча
-    private static int attackTimer = 0;
-    private static final int SWORD_COOLDOWN_TICKS = 12;
+    // Обходы
+    private static int tickCounter = 0;
+    private static int packetCounter = 0;
+    private static double fakeY = 0;
+    private static boolean wasFalling = false;
 
     @Override
     public void onInitialize() {
-        System.out.println("[KillAura] Загружен - Крит 90% | Тайминг меча");
+        System.out.println("[Freeze] Мод загружен - Максимальный обход");
 
-        keyBinding = KeyBindingHelper.registerKeyBinding(new KeyBinding(
-                "key.killaura.toggle",
+        toggleKey = KeyBindingHelper.registerKeyBinding(new KeyBinding(
+                "key.freeze.toggle",
                 InputUtil.Type.KEYSYM,
                 GLFW.GLFW_KEY_R,
-                "category.killaura"
+                "category.freeze"
         ));
 
         ClientTickEvents.END_CLIENT_TICK.register(client -> {
             if (client.player == null) return;
 
-            if (keyBinding.wasPressed()) {
+            if (toggleKey.wasPressed()) {
                 enabled = !enabled;
-                String status = enabled ? "§aВКЛЮЧЕН §7(Крит 90%)" : "§cВЫКЛЮЧЕН";
-                client.player.sendMessage(Text.literal("§l[KillAura] §r" + status), true);
+                String status = enabled ? "§aЗАВИСАНИЕ" : "§cВЫКЛ";
+                client.player.sendMessage(Text.literal("§l[Freeze] §r" + status), true);
+                
+                if (enabled) {
+                    fakeY = client.player.getY();
+                }
             }
 
             if (!enabled) return;
-            if (client.currentScreen != null) return;
+            if (client.player.isCreative()) return;
             
-            // Тайминг меча
-            if (attackTimer > 0) {
-                attackTimer--;
-                return;
+            Vec3d vel = client.player.getVelocity();
+            
+            // === ОБХОД 1: Блокировка падения ===
+            if (vel.y < 0) {
+                client.player.setVelocity(vel.x, 0, vel.z);
             }
             
-            // Проверка что в руке меч
-            boolean hasSword = client.player.getMainHandStack().getItem() instanceof SwordItem;
-            if (!hasSword) return;
-            
-            // Проверка зарядки меча
-            float cooldown = client.player.getAttackCooldownProgress(0);
-            if (cooldown < 0.99f) return;
-
-            Entity target = findBestTarget(client);
-            if (target == null) {
-                currentTarget = null;
-                rotationTicks = 0;
-                return;
+            // === ОБХОД 2: Подмена пакетов (сервер думает что ты на месте) ===
+            packetCounter++;
+            if (packetCounter >= 5) {
+                packetCounter = 0;
+                // Отправляем фейковую позицию на сервер
+                if (client.getNetworkHandler() != null) {
+                    PlayerMoveC2SPacket packet = new PlayerMoveC2SPacket.PositionAndOnGround(
+                        client.player.getX(),
+                        fakeY,
+                        client.player.getZ(),
+                        true
+                    );
+                    client.getNetworkHandler().sendPacket(packet);
+                }
             }
             
-            // Задержка смены цели
-            if (currentTarget != target) {
-                if (targetSwitchCooldown > 0) return;
-                currentTarget = target;
-                targetSwitchCooldown = 4;
-            }
-            if (targetSwitchCooldown > 0) {
-                targetSwitchCooldown--;
-                return;
-            }
-            
-            // Плавный поворот к цели
-            Vec3d targetPos = target.getBoundingBox().getCenter();
-            double dx = targetPos.x - client.player.getX();
-            double dy = targetPos.y - client.player.getEyeY();
-            double dz = targetPos.z - client.player.getZ();
-            double dh = Math.sqrt(dx * dx + dz * dz);
-            
-            float aimYaw = (float) Math.toDegrees(Math.atan2(dz, dx)) - 90;
-            float aimPitch = (float) -Math.toDegrees(Math.atan2(dy, dh));
-            
-            if (rotationTicks == 0) {
-                targetYaw = aimYaw;
-                targetPitch = aimPitch;
-                rotationTicks = 2;
+            // === ОБХОД 3: Микро-движения каждые 5-15 тиков ===
+            tickCounter++;
+            if (tickCounter > 8 + random.nextInt(12)) {
+                tickCounter = 0;
+                // Имитация маленького шага (для обхода)
+                double offsetX = (random.nextDouble() - 0.5) * 0.008;
+                double offsetZ = (random.nextDouble() - 0.5) * 0.008;
+                client.player.setVelocity(vel.x + offsetX, 0, vel.z + offsetZ);
             }
             
-            float currentYaw = client.player.getYaw();
-            float currentPitch = client.player.getPitch();
-            float newYaw = currentYaw + (targetYaw - currentYaw) / rotationTicks;
-            float newPitch = currentPitch + (targetPitch - currentPitch) / rotationTicks;
-            rotationTicks--;
-            
-            // Silent Aim
-            serverYaw = client.player.getYaw();
-            serverPitch = client.player.getPitch();
-            client.player.setYaw(newYaw);
-            client.player.setPitch(newPitch);
-            
-            // === КРИТ 90% ===
-            boolean isCrit = false;
-            if (client.player.isOnGround() && random.nextInt(100) < 90) {
-                client.player.jump();
-                isCrit = true;
+            // === ОБХОД 4: Сброс при ударе ===
+            if (client.player.hurtTime > 0) {
+                client.player.setVelocity(vel.x, 0, vel.z);
+                fakeY = client.player.getY();
             }
             
-            // Атака
-            client.interactionManager.attackEntity(client.player, target);
-            client.player.swingHand(Hand.MAIN_HAND);
-            
-            attackTimer = SWORD_COOLDOWN_TICKS;
-            
-            if (isCrit) {
-                client.player.sendMessage(Text.literal("§c⚡ КРИТ 90%! §7" + target.getName().getString()), true);
+            // === ОБХОД 5: Фиксация Y-координаты ===
+            if (Math.abs(client.player.getY() - fakeY) > 0.1) {
+                client.player.setPosition(client.player.getX(), fakeY, client.player.getZ());
             }
             
-            // Возвращаем углы
-            client.player.setYaw(serverYaw);
-            client.player.setPitch(serverPitch);
+            // === ОБХОД 6: Имитация "залатанного интернета" (античит думает что лаги) ===
+            if (random.nextInt(100) < 3) { // 3% шанс
+                // Пропускаем тик (имитация потери пакета)
+                try {
+                    Thread.sleep(10 + random.nextInt(20));
+                } catch (InterruptedException ignored) {}
+            }
         });
-    }
-
-    private Entity findBestTarget(MinecraftClient client) {
-        Entity bestTarget = null;
-        double bestDistance = 4.0;
-        
-        Box searchBox = client.player.getBoundingBox().expand(5.0);
-        List<Entity> entities = client.world.getOtherEntities(client.player, searchBox);
-        
-        for (Entity entity : entities) {
-            if (!(entity instanceof LivingEntity)) continue;
-            if (entity == client.player) continue;
-            if (entity instanceof PlayerEntity && ((PlayerEntity)entity).isCreative()) continue;
-            
-            double distance = client.player.distanceTo(entity);
-            if (distance > bestDistance) continue;
-            if (!client.player.canSee(entity)) continue;
-            
-            bestDistance = distance;
-            bestTarget = entity;
-        }
-        return bestTarget;
     }
 }
