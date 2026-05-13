@@ -3,13 +3,14 @@
   "id": "killaura",
   "version": "1.0.0",
   "name": "KillAura",
-  "description": "Simple KillAura",
+  "description": "Simple KillAura Mod",
   "authors": ["Swill"],
   "entrypoints": {
     "main": ["com.swill.killaura.KillAuraMod"]
   },
   "depends": {
     "fabricloader": ">=0.15.0",
-    "minecraft": "1.20.4"
+    "minecraft": "1.20.4",
+    "fabric-api": "*"
   }
 }
