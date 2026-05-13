@@ -88,7 +88,6 @@ public class KillAuraMod implements ModInitializer {
         BlockPos ground = client.player.getBlockPos().down();
         BlockPos plantPos = ground.up();
         
-        // Проверяем можно ли сажать
         if (client.world.getBlockState(plantPos).isAir()) {
             Vec3d hitPos = new Vec3d(plantPos.getX() + 0.5, plantPos.getY() + 0.5, plantPos.getZ() + 0.5);
             BlockHitResult hit = new BlockHitResult(hitPos, Direction.UP, plantPos, false);
@@ -98,7 +97,6 @@ public class KillAuraMod implements ModInitializer {
             actionDelay = 10;
             client.player.sendMessage(Text.literal("§a🌱 Саженец посажен"), true);
         } else {
-            // Уже есть блок, может старое дерево
             scanTree(client, plantPos);
             if (!woodBlocks.isEmpty()) {
                 currentState = State.CHOP_WOOD;
@@ -129,7 +127,6 @@ public class KillAuraMod implements ModInitializer {
         client.player.getInventory().selectedSlot = prev;
         actionDelay = 15;
         
-        // Ждём и сканируем дерево
         new Thread(() -> {
             try {
                 Thread.sleep(600);
@@ -148,7 +145,6 @@ public class KillAuraMod implements ModInitializer {
     }
 
     private void chopWood(MinecraftClient client) {
-        // Ищем топор
         int axeSlot = -1;
         for (int i = 0; i < 9; i++) {
             Item item = client.player.getInventory().getStack(i).getItem();
@@ -164,29 +160,22 @@ public class KillAuraMod implements ModInitializer {
         }
         
         if (woodBlocks.isEmpty()) {
-            // Сначала срубили дерево, теперь листва
             currentState = State.BREAK_LEAVES;
             client.player.sendMessage(Text.literal("§a🪓 Дерево срублено, убираю листву..."), true);
             return;
         }
         
-        // Берём топор
         int prevSlot = client.player.getInventory().selectedSlot;
         client.player.getInventory().selectedSlot = axeSlot;
         
-        // Берём следующий блок дерева
         BlockPos pos = woodBlocks.poll();
         
-        // Смотрим на блок
-        Vec3d hitPos = new Vec3d(pos.getX() + 0.5, pos.getY() + 0.5, pos.getZ() + 0.5);
-        client.player.lookAt(hitPos);
-        
-        // Ломаем блок
+        // Ломаем блок БЕЗ lookAt
         client.interactionManager.attackBlock(pos, Direction.UP);
         client.player.swingHand(Hand.MAIN_HAND);
         
         client.player.getInventory().selectedSlot = prevSlot;
-        actionDelay = 4; // 4 тика задержки между блоками
+        actionDelay = 4;
         
         if (woodBlocks.size() % 5 == 0) {
             client.player.sendMessage(Text.literal("§7🪓 Рублю... Осталось: " + woodBlocks.size()), true);
@@ -194,7 +183,6 @@ public class KillAuraMod implements ModInitializer {
     }
 
     private void breakLeaves(MinecraftClient client) {
-        // Ищем мотыгу
         int hoeSlot = -1;
         for (int i = 0; i < 9; i++) {
             Item item = client.player.getInventory().getStack(i).getItem();
@@ -210,25 +198,18 @@ public class KillAuraMod implements ModInitializer {
         }
         
         if (leavesBlocks.isEmpty()) {
-            // Всё закончили, начинаем заново
             currentState = State.PLANT;
             saplingPos = null;
             client.player.sendMessage(Text.literal("§a✅ Дерево полностью обработано!"), true);
             return;
         }
         
-        // Берём мотыгу
         int prevSlot = client.player.getInventory().selectedSlot;
         client.player.getInventory().selectedSlot = hoeSlot;
         
-        // Берём следующий блок листвы
         BlockPos pos = leavesBlocks.poll();
         
-        // Смотрим на блок
-        Vec3d hitPos = new Vec3d(pos.getX() + 0.5, pos.getY() + 0.5, pos.getZ() + 0.5);
-        client.player.lookAt(hitPos);
-        
-        // Ломаем блок
+        // Ломаем блок БЕЗ lookAt
         client.interactionManager.attackBlock(pos, Direction.UP);
         client.player.swingHand(Hand.MAIN_HAND);
         
