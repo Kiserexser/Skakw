@@ -65,7 +65,10 @@ public class KillAuraMod implements ModInitializer {
 
     private void plantSapling(MinecraftClient client) {
         int slot = findSapling(client);
-        if (slot == -1) { client.player.sendMessage(Text.literal("§cНет саженца"), true); return; }
+        if (slot == -1) { 
+            client.player.sendMessage(Text.literal("§cНет саженца"), true); 
+            return; 
+        }
         
         client.player.getInventory().selectedSlot = slot;
         BlockPos ground = client.player.getBlockPos().down();
@@ -80,10 +83,17 @@ public class KillAuraMod implements ModInitializer {
     }
 
     private void growTree(MinecraftClient client) {
-        if (saplingPos == null) { currentState = State.PLANT; return; }
+        if (saplingPos == null) { 
+            currentState = State.PLANT; 
+            return; 
+        }
         
         int slot = findItem(client, Items.BONE_MEAL);
-        if (slot == -1) { client.player.sendMessage(Text.literal("§cНет костной муки"), true); enabled = false; return; }
+        if (slot == -1) { 
+            client.player.sendMessage(Text.literal("§cНет костной муки"), true); 
+            enabled = false; 
+            return; 
+        }
         
         int prev = client.player.getInventory().selectedSlot;
         client.player.getInventory().selectedSlot = slot;
@@ -98,8 +108,13 @@ public class KillAuraMod implements ModInitializer {
     }
 
     private void chopWood(MinecraftClient client) {
-        int slot = findItem(client, Items.WOODEN_AXE, Items.STONE_AXE, Items.IRON_AXE, Items.DIAMOND_AXE, Items.NETHERITE_AXE);
-        if (slot == -1) { client.player.sendMessage(Text.literal("§cНет топора"), true); enabled = false; return; }
+        int slot = findItem(client, Items.WOODEN_AXE, Items.STONE_AXE, Items.IRON_AXE, 
+                            Items.GOLDEN_AXE, Items.DIAMOND_AXE, Items.NETHERITE_AXE);
+        if (slot == -1) { 
+            client.player.sendMessage(Text.literal("§cНет топора"), true); 
+            enabled = false; 
+            return; 
+        }
         
         int prev = client.player.getInventory().selectedSlot;
         client.player.getInventory().selectedSlot = slot;
@@ -107,7 +122,8 @@ public class KillAuraMod implements ModInitializer {
         while (!woodBlocks.isEmpty()) {
             BlockPos pos = woodBlocks.poll();
             if (!client.world.getBlockState(pos).isAir()) {
-                client.interactionManager.attackBlock(pos, client.player.getActiveHand());
+                // ИСПРАВЛЕНО: используем breakBlock, а не attackBlock
+                client.interactionManager.breakBlock(pos);
                 client.player.swingHand(Hand.MAIN_HAND);
             }
         }
@@ -116,8 +132,13 @@ public class KillAuraMod implements ModInitializer {
     }
 
     private void breakLeaves(MinecraftClient client) {
-        int slot = findItem(client, Items.WOODEN_HOE, Items.STONE_HOE, Items.IRON_HOE, Items.DIAMOND_HOE, Items.NETHERITE_HOE);
-        if (slot == -1) { client.player.sendMessage(Text.literal("§cНет мотыги"), true); enabled = false; return; }
+        int slot = findItem(client, Items.WOODEN_HOE, Items.STONE_HOE, Items.IRON_HOE, 
+                            Items.GOLDEN_HOE, Items.DIAMOND_HOE, Items.NETHERITE_HOE);
+        if (slot == -1) { 
+            client.player.sendMessage(Text.literal("§cНет мотыги"), true); 
+            enabled = false; 
+            return; 
+        }
         
         int prev = client.player.getInventory().selectedSlot;
         client.player.getInventory().selectedSlot = slot;
@@ -125,13 +146,15 @@ public class KillAuraMod implements ModInitializer {
         while (!leavesBlocks.isEmpty()) {
             BlockPos pos = leavesBlocks.poll();
             if (!client.world.getBlockState(pos).isAir()) {
-                client.interactionManager.attackBlock(pos, client.player.getActiveHand());
+                // ИСПРАВЛЕНО: используем breakBlock
+                client.interactionManager.breakBlock(pos);
                 client.player.swingHand(Hand.MAIN_HAND);
             }
         }
         currentState = State.PLANT;
         saplingPos = null;
         client.player.getInventory().selectedSlot = prev;
+        client.player.sendMessage(Text.literal("§a✅ Дерево готово!"), true);
     }
 
     private void scanTree(MinecraftClient client, BlockPos start) {
@@ -152,8 +175,13 @@ public class KillAuraMod implements ModInitializer {
                         BlockPos p = pos.add(dx, dy, dz);
                         if (visited.contains(p)) continue;
                         String name = client.world.getBlockState(p).getBlock().getName().getString().toLowerCase();
-                        if (name.contains("log")) { woodBlocks.add(p); queue.add(p); }
-                        else if (name.contains("leaves")) leavesBlocks.add(p);
+                        if (name.contains("log") || name.contains("wood")) { 
+                            woodBlocks.add(p); 
+                            queue.add(p); 
+                        }
+                        else if (name.contains("leaves")) {
+                            leavesBlocks.add(p);
+                        }
                     }
                 }
             }
@@ -161,7 +189,8 @@ public class KillAuraMod implements ModInitializer {
     }
 
     private int findSapling(MinecraftClient client) {
-        Item[] saplings = {Items.OAK_SAPLING, Items.SPRUCE_SAPLING, Items.BIRCH_SAPLING, Items.JUNGLE_SAPLING, Items.ACACIA_SAPLING, Items.DARK_OAK_SAPLING};
+        Item[] saplings = {Items.OAK_SAPLING, Items.SPRUCE_SAPLING, Items.BIRCH_SAPLING, 
+                           Items.JUNGLE_SAPLING, Items.ACACIA_SAPLING, Items.DARK_OAK_SAPLING};
         for (int i = 0; i < 9; i++) {
             Item item = client.player.getInventory().getStack(i).getItem();
             for (Item s : saplings) if (item == s) return i;
