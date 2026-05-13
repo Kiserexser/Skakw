@@ -1,4 +1,4 @@
-package com.swill.freeze;
+package com.swill.killaura;
 
 import net.fabricmc.api.ModInitializer;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
@@ -13,17 +13,15 @@ import org.lwjgl.glfw.GLFW;
 
 import java.util.Random;
 
-public class FreezeMod implements ModInitializer {
+public class KillAuraMod implements ModInitializer {
 
     private static boolean enabled = false;
     private static KeyBinding toggleKey;
     private static final Random random = new Random();
     
-    // Обходы
     private static int tickCounter = 0;
     private static int packetCounter = 0;
     private static double fakeY = 0;
-    private static boolean wasFalling = false;
 
     @Override
     public void onInitialize() {
@@ -54,16 +52,15 @@ public class FreezeMod implements ModInitializer {
             
             Vec3d vel = client.player.getVelocity();
             
-            // === ОБХОД 1: Блокировка падения ===
+            // Обход 1: Блокировка падения
             if (vel.y < 0) {
                 client.player.setVelocity(vel.x, 0, vel.z);
             }
             
-            // === ОБХОД 2: Подмена пакетов (сервер думает что ты на месте) ===
+            // Обход 2: Подмена пакетов
             packetCounter++;
             if (packetCounter >= 5) {
                 packetCounter = 0;
-                // Отправляем фейковую позицию на сервер
                 if (client.getNetworkHandler() != null) {
                     PlayerMoveC2SPacket packet = new PlayerMoveC2SPacket.PositionAndOnGround(
                         client.player.getX(),
@@ -75,33 +72,24 @@ public class FreezeMod implements ModInitializer {
                 }
             }
             
-            // === ОБХОД 3: Микро-движения каждые 5-15 тиков ===
+            // Обход 3: Микро-движения
             tickCounter++;
             if (tickCounter > 8 + random.nextInt(12)) {
                 tickCounter = 0;
-                // Имитация маленького шага (для обхода)
                 double offsetX = (random.nextDouble() - 0.5) * 0.008;
                 double offsetZ = (random.nextDouble() - 0.5) * 0.008;
                 client.player.setVelocity(vel.x + offsetX, 0, vel.z + offsetZ);
             }
             
-            // === ОБХОД 4: Сброс при ударе ===
+            // Обход 4: Сброс при ударе
             if (client.player.hurtTime > 0) {
                 client.player.setVelocity(vel.x, 0, vel.z);
                 fakeY = client.player.getY();
             }
             
-            // === ОБХОД 5: Фиксация Y-координаты ===
+            // Обход 5: Фиксация Y
             if (Math.abs(client.player.getY() - fakeY) > 0.1) {
                 client.player.setPosition(client.player.getX(), fakeY, client.player.getZ());
-            }
-            
-            // === ОБХОД 6: Имитация "залатанного интернета" (античит думает что лаги) ===
-            if (random.nextInt(100) < 3) { // 3% шанс
-                // Пропускаем тик (имитация потери пакета)
-                try {
-                    Thread.sleep(10 + random.nextInt(20));
-                } catch (InterruptedException ignored) {}
             }
         });
     }
