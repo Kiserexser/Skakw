@@ -22,12 +22,12 @@ public class KillAuraMod implements ModInitializer {
     private static boolean enabled = false;
     private static KeyBinding toggleKey;
     
-    private enum State { PLANT, GROW, CHOP_WOOD, BREAK_LEAVES, DONE }
+    private enum State { PLANT, GROW, CHOP_WOOD, BREAK_LEAVES }
     private static State currentState = State.PLANT;
     private static BlockPos saplingPos = null;
     private static Queue<BlockPos> woodBlocks = new LinkedList<>();
     private static Queue<BlockPos> leavesBlocks = new LinkedList<>();
-    private static int breakDelay = 0;
+    private static int actionDelay = 0;
 
     @Override
     public void onInitialize() {
@@ -55,8 +55,8 @@ public class KillAuraMod implements ModInitializer {
             }
             if (!enabled) return;
             
-            if (breakDelay > 0) {
-                breakDelay--;
+            if (actionDelay > 0) {
+                actionDelay--;
                 return;
             }
 
@@ -73,14 +73,6 @@ public class KillAuraMod implements ModInitializer {
                 case BREAK_LEAVES:
                     breakLeaves(client);
                     break;
-                case DONE:
-                    // Всё закончили, начинаем заново
-                    currentState = State.PLANT;
-                    saplingPos = null;
-                    woodBlocks.clear();
-                    leavesBlocks.clear();
-                    client.player.sendMessage(Text.literal("§a🔄 Начинаю новое дерево!"), true);
-                    break;
             }
         });
     }
@@ -88,21 +80,30 @@ public class KillAuraMod implements ModInitializer {
     private void plantSapling(MinecraftClient client) {
         int slot = findSapling(client);
         if (slot == -1) { 
-            client.player.sendMessage(Text.literal("§cНет саженца"), true); 
+            client.player.sendMessage(Text.literal("§cНет саженца!"), true); 
             return; 
         }
         
         client.player.getInventory().selectedSlot = slot;
         BlockPos ground = client.player.getBlockPos().down();
+        BlockPos plantPos = ground.up();
         
-        if (!client.world.getBlockState(ground).isAir()) {
-            saplingPos = ground.up();
-            Vec3d hitPos = new Vec3d(saplingPos.getX() + 0.5, saplingPos.getY() + 0.5, saplingPos.getZ() + 0.5);
-            BlockHitResult hit = new BlockHitResult(hitPos, Direction.UP, saplingPos, false);
+        // Проверяем можно ли сажать
+        if (client.world.getBlockState(plantPos).isAir()) {
+            Vec3d hitPos = new Vec3d(plantPos.getX() + 0.5, plantPos.getY() + 0.5, plantPos.getZ() + 0.5);
+            BlockHitResult hit = new BlockHitResult(hitPos, Direction.UP, plantPos, false);
             client.interactionManager.interactBlock(client.player, Hand.MAIN_HAND, hit);
+            saplingPos = plantPos;
             currentState = State.GROW;
-            breakDelay = 5;
+            actionDelay = 10;
             client.player.sendMessage(Text.literal("§a🌱 Саженец посажен"), true);
+        } else {
+            // Уже есть блок, может старое дерево
+            scanTree(client, plantPos);
+            if (!woodBlocks.isEmpty()) {
+                currentState = State.CHOP_WOOD;
+                client.player.sendMessage(Text.literal("§eНайдено старое дерево, рублю..."), true);
+            }
         }
     }
 
@@ -114,8 +115,7 @@ public class KillAuraMod implements ModInitializer {
         
         int slot = findItem(client, Items.BONE_MEAL);
         if (slot == -1) { 
-            client.player.sendMessage(Text.literal("§cНет костной муки"), true); 
-            enabled = false; 
+            client.player.sendMessage(Text.literal("§cНет костной муки!"), true); 
             return; 
         }
         
@@ -126,100 +126,117 @@ public class KillAuraMod implements ModInitializer {
         BlockHitResult hit = new BlockHitResult(hitPos, Direction.UP, saplingPos, false);
         client.interactionManager.interactBlock(client.player, Hand.MAIN_HAND, hit);
         
-        // Сканируем дерево ПОСЛЕ использования костной муки
         client.player.getInventory().selectedSlot = prev;
-        breakDelay = 15;
+        actionDelay = 15;
         
-        // Задержка чтобы дерево успело вырасти
+        // Ждём и сканируем дерево
         new Thread(() -> {
             try {
-                Thread.sleep(500);
+                Thread.sleep(600);
                 MinecraftClient.getInstance().execute(() -> {
-                    if (saplingPos != null) {
-                        scanTree(client, saplingPos);
-                        if (!woodBlocks.isEmpty()) {
-                            currentState = State.CHOP_WOOD;
-                            client.player.sendMessage(Text.literal("§a🌲 Дерево выросло! Начинаю рубку..."), true);
-                        } else {
-                            currentState = State.GROW;
-                            client.player.sendMessage(Text.literal("§eДерево не выросло, пробую ещё раз..."), true);
-                        }
+                    scanTree(client, saplingPos);
+                    if (!woodBlocks.isEmpty()) {
+                        currentState = State.CHOP_WOOD;
+                        client.player.sendMessage(Text.literal("§a🌲 Дерево выросло! Блоков: " + woodBlocks.size()), true);
+                    } else {
+                        client.player.sendMessage(Text.literal("§eДерево не выросло, пробую ещё раз..."), true);
+                        currentState = State.GROW;
                     }
                 });
-            } catch (InterruptedException e) {
-                e.printStackTrace();
-            }
+            } catch (InterruptedException e) {}
         }).start();
     }
 
     private void chopWood(MinecraftClient client) {
-        int slot = findItem(client, Items.WOODEN_AXE, Items.STONE_AXE, Items.IRON_AXE, 
-                            Items.GOLDEN_AXE, Items.DIAMOND_AXE, Items.NETHERITE_AXE);
-        if (slot == -1) { 
-            client.player.sendMessage(Text.literal("§cНет топора"), true); 
-            enabled = false; 
+        // Ищем топор
+        int axeSlot = -1;
+        for (int i = 0; i < 9; i++) {
+            Item item = client.player.getInventory().getStack(i).getItem();
+            if (item instanceof AxeItem) {
+                axeSlot = i;
+                break;
+            }
+        }
+        
+        if (axeSlot == -1) { 
+            client.player.sendMessage(Text.literal("§cНет топора в горячем баре!"), true); 
             return; 
         }
         
         if (woodBlocks.isEmpty()) {
-            client.player.sendMessage(Text.literal("§a✅ Вся древесина срублена! Перехожу к листве..."), true);
+            // Сначала срубили дерево, теперь листва
             currentState = State.BREAK_LEAVES;
+            client.player.sendMessage(Text.literal("§a🪓 Дерево срублено, убираю листву..."), true);
             return;
         }
         
-        int prev = client.player.getInventory().selectedSlot;
-        client.player.getInventory().selectedSlot = slot;
+        // Берём топор
+        int prevSlot = client.player.getInventory().selectedSlot;
+        client.player.getInventory().selectedSlot = axeSlot;
         
+        // Берём следующий блок дерева
         BlockPos pos = woodBlocks.poll();
-        if (!client.world.getBlockState(pos).isAir()) {
-            client.interactionManager.attackBlock(pos, Direction.UP);
-            client.player.swingHand(Hand.MAIN_HAND);
-            breakDelay = 3;
-            client.player.sendMessage(Text.literal("§7🪓 Рублю дерево... Осталось: " + woodBlocks.size()), true);
-        }
         
-        client.player.getInventory().selectedSlot = prev;
+        // Смотрим на блок
+        Vec3d hitPos = new Vec3d(pos.getX() + 0.5, pos.getY() + 0.5, pos.getZ() + 0.5);
+        client.player.lookAt(hitPos);
         
-        if (woodBlocks.isEmpty()) {
-            client.player.sendMessage(Text.literal("§a✅ Вся древесина срублена! Перехожу к листве..."), true);
-            currentState = State.BREAK_LEAVES;
+        // Ломаем блок
+        client.interactionManager.attackBlock(pos, Direction.UP);
+        client.player.swingHand(Hand.MAIN_HAND);
+        
+        client.player.getInventory().selectedSlot = prevSlot;
+        actionDelay = 4; // 4 тика задержки между блоками
+        
+        if (woodBlocks.size() % 5 == 0) {
+            client.player.sendMessage(Text.literal("§7🪓 Рублю... Осталось: " + woodBlocks.size()), true);
         }
     }
 
     private void breakLeaves(MinecraftClient client) {
-        int slot = findItem(client, Items.WOODEN_HOE, Items.STONE_HOE, Items.IRON_HOE, 
-                            Items.GOLDEN_HOE, Items.DIAMOND_HOE, Items.NETHERITE_HOE);
-        if (slot == -1) { 
-            client.player.sendMessage(Text.literal("§cНет мотыги"), true); 
-            enabled = false; 
+        // Ищем мотыгу
+        int hoeSlot = -1;
+        for (int i = 0; i < 9; i++) {
+            Item item = client.player.getInventory().getStack(i).getItem();
+            if (item instanceof HoeItem) {
+                hoeSlot = i;
+                break;
+            }
+        }
+        
+        if (hoeSlot == -1) { 
+            client.player.sendMessage(Text.literal("§cНет мотыги в горячем баре!"), true); 
             return; 
         }
         
         if (leavesBlocks.isEmpty()) {
-            client.player.sendMessage(Text.literal("§a🎉 Дерево полностью обработано!"), true);
-            currentState = State.DONE;
+            // Всё закончили, начинаем заново
+            currentState = State.PLANT;
+            saplingPos = null;
+            client.player.sendMessage(Text.literal("§a✅ Дерево полностью обработано!"), true);
             return;
         }
         
-        int prev = client.player.getInventory().selectedSlot;
-        client.player.getInventory().selectedSlot = slot;
+        // Берём мотыгу
+        int prevSlot = client.player.getInventory().selectedSlot;
+        client.player.getInventory().selectedSlot = hoeSlot;
         
+        // Берём следующий блок листвы
         BlockPos pos = leavesBlocks.poll();
-        if (!client.world.getBlockState(pos).isAir()) {
-            client.interactionManager.attackBlock(pos, Direction.UP);
-            client.player.swingHand(Hand.MAIN_HAND);
-            breakDelay = 2;
-            
-            if (leavesBlocks.size() % 10 == 0) {
-                client.player.sendMessage(Text.literal("§7🍃 Срубаю листву... Осталось: " + leavesBlocks.size()), true);
-            }
-        }
         
-        client.player.getInventory().selectedSlot = prev;
+        // Смотрим на блок
+        Vec3d hitPos = new Vec3d(pos.getX() + 0.5, pos.getY() + 0.5, pos.getZ() + 0.5);
+        client.player.lookAt(hitPos);
         
-        if (leavesBlocks.isEmpty()) {
-            client.player.sendMessage(Text.literal("§a🎉 Дерево полностью обработано! Начинаю новое..."), true);
-            currentState = State.DONE;
+        // Ломаем блок
+        client.interactionManager.attackBlock(pos, Direction.UP);
+        client.player.swingHand(Hand.MAIN_HAND);
+        
+        client.player.getInventory().selectedSlot = prevSlot;
+        actionDelay = 2;
+        
+        if (leavesBlocks.size() % 10 == 0) {
+            client.player.sendMessage(Text.literal("§7🍃 Убираю листву... Осталось: " + leavesBlocks.size()), true);
         }
     }
 
@@ -252,7 +269,7 @@ public class KillAuraMod implements ModInitializer {
                 }
             }
         }
-        client.player.sendMessage(Text.literal("§a📊 Найдено: §f" + woodBlocks.size() + " §aблоков дерева, §f" + leavesBlocks.size() + " §aлиствы"), true);
+        client.player.sendMessage(Text.literal("§a📊 Дерево: §f" + woodBlocks.size() + " §aблоков, листва: §f" + leavesBlocks.size()), true);
     }
 
     private int findSapling(MinecraftClient client) {
@@ -270,10 +287,6 @@ public class KillAuraMod implements ModInitializer {
         for (int i = 0; i < 9; i++) {
             Item item = client.player.getInventory().getStack(i).getItem();
             for (Item target : items) if (item == target) return i;
-        }
-        for (int i = 9; i < 36; i++) {
-            Item item = client.player.getInventory().getStack(i).getItem();
-            for (Item target : items) if (item == target) return i - 36;
         }
         return -1;
     }
