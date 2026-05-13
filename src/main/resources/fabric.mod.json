@@ -2,8 +2,8 @@
   "schemaVersion": 1,
   "id": "killaura",
   "version": "1.0.0",
-  "name": "KillAura",
-  "description": "Simple KillAura Mod",
+  "name": "TreeFarmer",
+  "description": "Auto tree farm",
   "authors": ["Swill"],
   "entrypoints": {
     "main": ["com.swill.killaura.KillAuraMod"]
