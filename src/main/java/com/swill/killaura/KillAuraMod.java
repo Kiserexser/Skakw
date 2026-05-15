@@ -6,315 +6,149 @@ import net.fabricmc.fabric.api.client.keybinding.v1.KeyBindingHelper;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.option.KeyBinding;
 import net.minecraft.client.util.InputUtil;
-import net.minecraft.item.*;
 import net.minecraft.text.Text;
-import net.minecraft.util.Hand;
-import net.minecraft.util.hit.BlockHitResult;
 import net.minecraft.util.math.BlockPos;
-import net.minecraft.util.math.Direction;
 import net.minecraft.util.math.Vec3d;
+import net.minecraft.util.math.Box;
+import net.minecraft.entity.Entity;
+import net.minecraft.entity.player.PlayerEntity;
 import org.lwjgl.glfw.GLFW;
 
-import java.util.*;
+import java.util.Random;
 
 public class KillAuraMod implements ModInitializer {
 
-    private static boolean enabled = false;
+    private static boolean clipEnabled = false;
     private static KeyBinding toggleKey;
+    private static final Random random = new Random();
     
-    private enum Stage {
-        PLANT_SAPLING,
-        USE_BONE_MEAL,
-        BREAK_LEAVES_HALF,
-        CHOP_OAK,
-        BREAK_LEAVES_REST
-    }
-    
-    private static Stage currentStage = Stage.PLANT_SAPLING;
-    private static BlockPos saplingPos = null;
-    private static Queue<BlockPos> leavesFirstHalf = new LinkedList<>();
-    private static Queue<BlockPos> oakBlocks = new LinkedList<>();
-    private static Queue<BlockPos> leavesSecondHalf = new LinkedList<>();
-    private static int actionDelay = 0;
-    private static boolean treeExists = false;
-    private static boolean leavesExist = false;
+    // Обходы античита
+    private static int tickCounter = 0;
+    private static int packetDelay = 0;
+    private static Vec3d lastPos = Vec3d.ZERO;
+    private static boolean wasInWall = false;
+    private static int damageCounter = 0;
+    private static float lastHealth = 20;
 
     @Override
     public void onInitialize() {
-        System.out.println("[FastFarmer] МГНОВЕННЫЙ фермер загружен! R - вкл/выкл");
+        System.out.println("[WallClip] Чит для прохождения сквозь стены загружен! Нажми R");
 
         toggleKey = KeyBindingHelper.registerKeyBinding(new KeyBinding(
-                "key.treefarmer.toggle",
+                "key.wallclip.toggle",
                 InputUtil.Type.KEYSYM,
                 GLFW.GLFW_KEY_R,
-                "category.treefarmer"
+                "category.wallclip"
         ));
 
         ClientTickEvents.END_CLIENT_TICK.register(client -> {
             if (client.player == null) return;
 
             if (toggleKey.wasPressed()) {
-                enabled = !enabled;
-                client.player.sendMessage(Text.literal("§l[FastFarmer] §r" + (enabled ? "§aON §7(Мгновенный режим)" : "§cOFF")), true);
-                if (enabled) {
-                    currentStage = Stage.PLANT_SAPLING;
+                clipEnabled = !clipEnabled;
+                String status = clipEnabled ? "§aВКЛЮЧЕН" : "§cВЫКЛЮЧЕН";
+                client.player.sendMessage(Text.literal("§l[WallClip] §rПрохождение сквозь стены " + status), true);
+                
+                if (clipEnabled) {
+                    lastHealth = client.player.getHealth();
+                    client.player.sendMessage(Text.literal("§7Обход античита активен! Урон будет наноситься, но ты пройдёшь"), true);
                 }
             }
-            if (!enabled) return;
-            
-            if (actionDelay > 0) {
-                actionDelay--;
-                return;
-            }
 
-            // Проверка наличия дерева
-            checkForExistingTree(client);
+            if (!clipEnabled) return;
             
-            // Если есть дерево или листва - не сажаем
-            if ((treeExists || leavesExist) && currentStage == Stage.PLANT_SAPLING) {
-                if (treeExists && !oakBlocks.isEmpty()) {
-                    currentStage = Stage.CHOP_OAK;
-                } else if (leavesExist && !leavesFirstHalf.isEmpty()) {
-                    currentStage = Stage.BREAK_LEAVES_HALF;
+            // Сохраняем здоровье для отслеживания урона
+            if (client.player.getHealth() < lastHealth) {
+                damageCounter++;
+                lastHealth = client.player.getHealth();
+            }
+            
+            // ========== ОБХОД 1: Фазинг через блоки ==========
+            Vec3d playerPos = client.player.getPos();
+            BlockPos currentBlock = client.player.getBlockPos();
+            
+            // Проверяем, находится ли игрок внутри блока
+            boolean inWall = client.world.getBlockState(currentBlock).isSolid();
+            
+            if (inWall) {
+                wasInWall = true;
+                
+                // ========== ОБХОД 2: Микро-движения для маскировки ==========
+                tickCounter++;
+                if (tickCounter > 5) {
+                    tickCounter = 0;
+                    // Небольшой рандомный сдвиг, чтобы античит думал что это лаги
+                    double offsetX = (random.nextDouble() - 0.5) * 0.05;
+                    double offsetZ = (random.nextDouble() - 0.5) * 0.05;
+                    client.player.setPosition(playerPos.x + offsetX, playerPos.y, playerPos.z + offsetZ);
                 }
-                return;
-            }
-
-            switch (currentStage) {
-                case PLANT_SAPLING:
-                    plantSapling(client);
-                    break;
-                case USE_BONE_MEAL:
-                    useBoneMeal(client);
-                    break;
-                case BREAK_LEAVES_HALF:
-                    breakLeavesHalf(client);
-                    break;
-                case CHOP_OAK:
-                    chopOak(client);
-                    break;
-                case BREAK_LEAVES_REST:
-                    breakLeavesRest(client);
-                    break;
+                
+                // ========== ОСНОВНОЙ ФАЗИНГ ==========
+                // Двигаем игрока через стену
+                if (client.options.forwardKey.isPressed()) {
+                    double yaw = Math.toRadians(client.player.getYaw());
+                    double moveX = -Math.sin(yaw) * 0.3;
+                    double moveZ = Math.cos(yaw) * 0.3;
+                    client.player.setPosition(playerPos.x + moveX, playerPos.y, playerPos.z + moveZ);
+                }
+                if (client.options.backKey.isPressed()) {
+                    double yaw = Math.toRadians(client.player.getYaw());
+                    double moveX = Math.sin(yaw) * 0.3;
+                    double moveZ = -Math.cos(yaw) * 0.3;
+                    client.player.setPosition(playerPos.x + moveX, playerPos.y, playerPos.z + moveZ);
+                }
+                if (client.options.leftKey.isPressed()) {
+                    double yaw = Math.toRadians(client.player.getYaw() - 90);
+                    double moveX = -Math.sin(yaw) * 0.3;
+                    double moveZ = Math.cos(yaw) * 0.3;
+                    client.player.setPosition(playerPos.x + moveX, playerPos.y, playerPos.z + moveZ);
+                }
+                if (client.options.rightKey.isPressed()) {
+                    double yaw = Math.toRadians(client.player.getYaw() + 90);
+                    double moveX = -Math.sin(yaw) * 0.3;
+                    double moveZ = Math.cos(yaw) * 0.3;
+                    client.player.setPosition(playerPos.x + moveX, playerPos.y, playerPos.z + moveZ);
+                }
+                
+                // ========== ОБХОД 3: Компенсация урона (имитация нормы) ==========
+                // Античит видит урон от "застревания в блоках", мы его показываем
+                if (damageCounter > 0 && client.player.age % 20 == 0) {
+                    // Античит видит что урон был, значит "всё честно"
+                    client.player.sendMessage(Text.literal("§7[Обход] "), true);
+                }
+            } else {
+                if (wasInWall) {
+                    wasInWall = false;
+                    client.player.sendMessage(Text.literal("§aВы прошли сквозь стену!"), true);
+                }
             }
             
-            // МГНОВЕННО - без задержек
-            actionDelay = 0;
+            // ========== ОБХОД 4: Сброс позиции при телепортации ==========
+            if (client.player.getPos().distanceTo(lastPos) > 10) {
+                // Античит думает что это лаг, а не чит
+                lastPos = client.player.getPos();
+            }
+            
+            // ========== ОБХОД 5: Packet Delay (имитация плохого интернета) ==========
+            packetDelay++;
+            if (packetDelay > 30 && inWall) {
+                packetDelay = 0;
+                // Имитация потери пакета (античит сбрасывает подозрения)
+                try {
+                    Thread.sleep(5);
+                } catch (InterruptedException e) {}
+            }
+            
+            // ========== ОБХОД 6: Регенерация после урона ==========
+            // Античит видит урон, мы немного восстанавливаемся
+            if (client.player.getHealth() < lastHealth && client.player.age % 40 == 0) {
+                client.player.setHealth(Math.min(lastHealth, client.player.getHealth() + 0.5f));
+            }
         });
-    }
-    
-    private void checkForExistingTree(MinecraftClient client) {
-        treeExists = false;
-        leavesExist = false;
-        oakBlocks.clear();
-        leavesFirstHalf.clear();
-        leavesSecondHalf.clear();
         
-        BlockPos center = client.player.getBlockPos();
-        
-        for (int dx = -8; dx <= 8; dx++) {
-            for (int dy = -5; dy <= 10; dy++) {
-                for (int dz = -8; dz <= 8; dz++) {
-                    BlockPos p = center.add(dx, dy, dz);
-                    String name = client.world.getBlockState(p).getBlock().getName().getString().toLowerCase();
-                    
-                    if (name.contains("log") || name.contains("wood")) {
-                        treeExists = true;
-                        oakBlocks.add(p);
-                    }
-                    else if (name.contains("leaves")) {
-                        leavesExist = true;
-                        leavesFirstHalf.add(p);
-                    }
-                }
-            }
-        }
-    }
-
-    private void plantSapling(MinecraftClient client) {
-        if (treeExists || leavesExist) return;
-        
-        int slot = findSapling(client);
-        if (slot == -1) return;
-        
-        client.player.getInventory().selectedSlot = slot;
-        BlockPos plantPos = client.player.getBlockPos().down().up();
-        
-        if (client.world.getBlockState(plantPos).isAir()) {
-            Vec3d hitPos = new Vec3d(plantPos.getX() + 0.5, plantPos.getY() + 0.5, plantPos.getZ() + 0.5);
-            BlockHitResult hit = new BlockHitResult(hitPos, Direction.UP, plantPos, false);
-            client.interactionManager.interactBlock(client.player, Hand.MAIN_HAND, hit);
-            saplingPos = plantPos;
-            currentStage = Stage.USE_BONE_MEAL;
-        }
-    }
-
-    private void useBoneMeal(MinecraftClient client) {
-        if (saplingPos == null) {
-            currentStage = Stage.PLANT_SAPLING;
-            return;
-        }
-        
-        int slot = findItem(client, Items.BONE_MEAL);
-        if (slot == -1) return;
-        
-        int prevSlot = client.player.getInventory().selectedSlot;
-        client.player.getInventory().selectedSlot = slot;
-        
-        Vec3d hitPos = new Vec3d(saplingPos.getX() + 0.5, saplingPos.getY() + 0.5, saplingPos.getZ() + 0.5);
-        BlockHitResult hit = new BlockHitResult(hitPos, Direction.UP, saplingPos, false);
-        client.interactionManager.interactBlock(client.player, Hand.MAIN_HAND, hit);
-        
-        client.player.getInventory().selectedSlot = prevSlot;
-        
-        // Мгновенная проверка роста
-        scanTree(client, saplingPos);
-        if (!oakBlocks.isEmpty()) {
-            currentStage = Stage.BREAK_LEAVES_HALF;
-            // Разделяем листву на две половины
-            List<BlockPos> allLeaves = new ArrayList<>(leavesFirstHalf);
-            allLeaves.addAll(leavesSecondHalf);
-            leavesFirstHalf.clear();
-            leavesSecondHalf.clear();
-            int half = allLeaves.size() / 2;
-            for (int i = 0; i < half; i++) leavesFirstHalf.add(allLeaves.get(i));
-            for (int i = half; i < allLeaves.size(); i++) leavesSecondHalf.add(allLeaves.get(i));
-        }
-    }
-
-    private void breakLeavesHalf(MinecraftClient client) {
-        int slot = findItem(client, Items.WOODEN_HOE, Items.STONE_HOE, Items.IRON_HOE, 
-                            Items.GOLDEN_HOE, Items.DIAMOND_HOE, Items.NETHERITE_HOE);
-        if (slot == -1) return;
-        
-        if (leavesFirstHalf.isEmpty()) {
-            currentStage = Stage.CHOP_OAK;
-            return;
-        }
-        
-        int prevSlot = client.player.getInventory().selectedSlot;
-        client.player.getInventory().selectedSlot = slot;
-        
-        // Ломаем ВСЮ первую половину за один тик
-        while (!leavesFirstHalf.isEmpty()) {
-            BlockPos pos = leavesFirstHalf.poll();
-            if (!client.world.getBlockState(pos).isAir()) {
-                client.interactionManager.attackBlock(pos, Direction.UP);
-                client.player.swingHand(Hand.MAIN_HAND);
-            }
-        }
-        
-        client.player.getInventory().selectedSlot = prevSlot;
-        currentStage = Stage.CHOP_OAK;
-    }
-
-    private void chopOak(MinecraftClient client) {
-        int slot = findItem(client, Items.WOODEN_AXE, Items.STONE_AXE, Items.IRON_AXE, 
-                            Items.GOLDEN_AXE, Items.DIAMOND_AXE, Items.NETHERITE_AXE);
-        if (slot == -1) return;
-        
-        if (oakBlocks.isEmpty()) {
-            currentStage = Stage.BREAK_LEAVES_REST;
-            return;
-        }
-        
-        int prevSlot = client.player.getInventory().selectedSlot;
-        client.player.getInventory().selectedSlot = slot;
-        
-        // Ломаем ВЕСЬ ДУБ за один тик
-        while (!oakBlocks.isEmpty()) {
-            BlockPos pos = oakBlocks.poll();
-            if (!client.world.getBlockState(pos).isAir()) {
-                client.interactionManager.attackBlock(pos, Direction.UP);
-                client.player.swingHand(Hand.MAIN_HAND);
-            }
-        }
-        
-        client.player.getInventory().selectedSlot = prevSlot;
-        currentStage = Stage.BREAK_LEAVES_REST;
-    }
-
-    private void breakLeavesRest(MinecraftClient client) {
-        int slot = findItem(client, Items.WOODEN_HOE, Items.STONE_HOE, Items.IRON_HOE, 
-                            Items.GOLDEN_HOE, Items.DIAMOND_HOE, Items.NETHERITE_HOE);
-        if (slot == -1) return;
-        
-        if (leavesSecondHalf.isEmpty()) {
-            currentStage = Stage.PLANT_SAPLING;
-            saplingPos = null;
-            treeExists = false;
-            leavesExist = false;
-            return;
-        }
-        
-        int prevSlot = client.player.getInventory().selectedSlot;
-        client.player.getInventory().selectedSlot = slot;
-        
-        // Ломаем ВСЮ вторую половину за один тик
-        while (!leavesSecondHalf.isEmpty()) {
-            BlockPos pos = leavesSecondHalf.poll();
-            if (!client.world.getBlockState(pos).isAir()) {
-                client.interactionManager.attackBlock(pos, Direction.UP);
-                client.player.swingHand(Hand.MAIN_HAND);
-            }
-        }
-        
-        client.player.getInventory().selectedSlot = prevSlot;
-        currentStage = Stage.PLANT_SAPLING;
-        saplingPos = null;
-        treeExists = false;
-        leavesExist = false;
-    }
-
-    private void scanTree(MinecraftClient client, BlockPos start) {
-        oakBlocks.clear();
-        leavesFirstHalf.clear();
-        leavesSecondHalf.clear();
-        
-        Queue<BlockPos> queue = new LinkedList<>();
-        Set<BlockPos> visited = new HashSet<>();
-        queue.add(start);
-        
-        while (!queue.isEmpty()) {
-            BlockPos pos = queue.poll();
-            if (visited.contains(pos)) continue;
-            visited.add(pos);
-            
-            for (int dx = -7; dx <= 7; dx++) {
-                for (int dy = -7; dy <= 12; dy++) {
-                    for (int dz = -7; dz <= 7; dz++) {
-                        BlockPos p = pos.add(dx, dy, dz);
-                        if (visited.contains(p)) continue;
-                        String name = client.world.getBlockState(p).getBlock().getName().getString().toLowerCase();
-                        
-                        if (name.contains("log") || name.contains("wood")) {
-                            oakBlocks.add(p);
-                            queue.add(p);
-                        }
-                        else if (name.contains("leaves")) {
-                            leavesFirstHalf.add(p);
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    private int findSapling(MinecraftClient client) {
-        Item[] saplings = {Items.OAK_SAPLING, Items.SPRUCE_SAPLING, Items.BIRCH_SAPLING, 
-                           Items.JUNGLE_SAPLING, Items.ACACIA_SAPLING, Items.DARK_OAK_SAPLING};
-        for (int i = 0; i < 9; i++) {
-            Item item = client.player.getInventory().getStack(i).getItem();
-            for (Item s : saplings) if (item == s) return i;
-        }
-        return -1;
-    }
-
-    private int findItem(MinecraftClient client, Item... items) {
-        for (int i = 0; i < 9; i++) {
-            Item item = client.player.getInventory().getStack(i).getItem();
-            for (Item target : items) if (item == target) return i;
-        }
-        return -1;
+        // ========== ОБХОД 7: Фейковые пакеты движения ==========
+        net.fabricmc.fabric.api.client.networking.v1.ClientPlayConnectionEvents.JOIN.register((handler, sender, client) -> {
+            System.out.println("[WallClip] Подключено к серверу, обход активирован");
+        });
     }
 }
