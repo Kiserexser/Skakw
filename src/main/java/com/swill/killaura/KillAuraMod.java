@@ -3,152 +3,231 @@ package com.swill.killaura;
 import net.fabricmc.api.ModInitializer;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.fabric.api.client.keybinding.v1.KeyBindingHelper;
+import net.fabricmc.fabric.api.client.rendering.v1.WorldRenderEvents;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.option.KeyBinding;
 import net.minecraft.client.util.InputUtil;
+import net.minecraft.client.util.math.MatrixStack;
+import net.minecraft.client.render.VertexFormats;
+import net.minecraft.client.render.VertexFormat;
+import net.minecraft.client.render.Tessellator;
+import net.minecraft.client.render.BufferBuilder;
 import net.minecraft.entity.Entity;
 import net.minecraft.entity.LivingEntity;
 import net.minecraft.entity.player.PlayerEntity;
-import net.minecraft.item.SwordItem;
 import net.minecraft.text.Text;
-import net.minecraft.util.Hand;
 import net.minecraft.util.math.Box;
 import net.minecraft.util.math.Vec3d;
+import net.minecraft.util.math.MathHelper;
 import org.lwjgl.glfw.GLFW;
+import com.mojang.blaze3d.systems.RenderSystem;
 
-import java.util.List;
-import java.util.Random;
+import java.awt.Color;
 
 public class KillAuraMod implements ModInitializer {
 
     private static boolean enabled = false;
-    private static KeyBinding keyBinding;
-    private static final Random random = new Random();
+    private static KeyBinding toggleKey;
     
-    // Тайминг меча (12 тиков = 0.6 сек)
-    private static int attackCooldown = 0;
-    private static final int SWORD_CD_TICKS = 12;
-    
-    // Плавный поворот (камера не дёргается)
-    private static float targetYaw = 0;
-    private static float targetPitch = 0;
-    private static int rotationTicks = 0;
-    private static float serverYaw = 0;
-    private static float serverPitch = 0;
-    
-    // Крит шанс (как у меча)
-    private static int critChance = 85;
+    // 3x хитбоксы
+    private static final float HITBOX_MULTIPLIER = 3.0f;
 
     @Override
     public void onInitialize() {
-        System.out.println("[KillAura] Беспалевная KillAura загружена! Нажми R");
+        System.out.println("[3xHitbox] Мод загружен! Нажми R для вкл/выкл");
 
-        keyBinding = KeyBindingHelper.registerKeyBinding(new KeyBinding(
-                "key.killaura.toggle",
+        toggleKey = KeyBindingHelper.registerKeyBinding(new KeyBinding(
+                "key.hitbox.toggle",
                 InputUtil.Type.KEYSYM,
                 GLFW.GLFW_KEY_R,
-                "category.killaura"
+                "category.hitbox"
         ));
 
         ClientTickEvents.END_CLIENT_TICK.register(client -> {
             if (client.player == null) return;
 
-            if (keyBinding.wasPressed()) {
+            if (toggleKey.wasPressed()) {
                 enabled = !enabled;
-                String status = enabled ? "§aВКЛЮЧЕН" : "§cВЫКЛЮЧЕН";
-                client.player.sendMessage(Text.literal("§l[KillAura] §r" + status), true);
+                String status = enabled ? "§aВКЛЮЧЕН §7(3x хитбоксы)" : "§cВЫКЛЮЧЕН";
+                client.player.sendMessage(Text.literal("§l[3xHitbox] §r" + status), true);
             }
-
+        });
+        
+        // Рендер 3x хитбоксов и обводки
+        WorldRenderEvents.LAST.register(context -> {
             if (!enabled) return;
-            if (client.currentScreen != null) return;
             
-            // === ТОЛЬКО МЕЧ! ===
-            boolean hasSword = client.player.getMainHandStack().getItem() instanceof SwordItem;
-            if (!hasSword) return;
+            MatrixStack matrices = context.matrixStack();
+            MinecraftClient client = MinecraftClient.getInstance();
+            if (client.player == null) return;
             
-            // === ТАЙМИНГ МЕЧА (КТ как у меча) ===
-            // Меч бьёт раз в 12 тиков (0.6 сек)
-            if (attackCooldown > 0) {
-                attackCooldown--;
-                return;
-            }
+            RenderSystem.enableBlend();
+            RenderSystem.defaultBlendFunc();
+            RenderSystem.disableDepthTest();
             
-            // Дополнительная проверка зарядки меча
-            float cooldown = client.player.getAttackCooldownProgress(0);
-            if (cooldown < 0.98f) return;
-
-            // Поиск цели
-            Entity target = findTarget(client);
-            if (target == null) return;
-            
-            // === ПЛАВНЫЙ ПОВОРОТ (камера не дёргается) ===
-            if (rotationTicks == 0) {
-                Vec3d targetPos = target.getBoundingBox().getCenter();
-                double dx = targetPos.x - client.player.getX();
-                double dy = targetPos.y - client.player.getEyeY();
-                double dz = targetPos.z - client.player.getZ();
-                double dh = Math.sqrt(dx * dx + dz * dz);
+            for (Entity entity : client.world.getEntities()) {
+                if (!(entity instanceof LivingEntity)) continue;
+                if (entity == client.player) continue;
                 
-                targetYaw = (float) Math.toDegrees(Math.atan2(dz, dx)) - 90;
-                targetPitch = (float) -Math.toDegrees(Math.atan2(dy, dh));
-                rotationTicks = 2;
+                // Увеличенный хитбокс (3x)
+                Box bigBox = getBigHitbox(entity);
+                
+                // Цвет обводки
+                Color color = getEntityColor(entity);
+                
+                // Рисуем обводку и заливку
+                drawBoxOutline(matrices, bigBox, color);
+                drawBoxFill(matrices, bigBox, new Color(color.getRed(), color.getGreen(), color.getBlue(), 40));
             }
             
-            float currentYaw = client.player.getYaw();
-            float currentPitch = client.player.getPitch();
-            float newYaw = currentYaw + (targetYaw - currentYaw) / rotationTicks;
-            float newPitch = currentPitch + (targetPitch - currentPitch) / rotationTicks;
-            rotationTicks--;
-            
-            // Silent Aim
-            serverYaw = client.player.getYaw();
-            serverPitch = client.player.getPitch();
-            client.player.setYaw(newYaw);
-            client.player.setPitch(newPitch);
-            
-            // === КРИТ (как у меча) ===
-            boolean willCrit = false;
-            if (client.player.isOnGround() && random.nextInt(100) < critChance) {
-                client.player.jump();
-                willCrit = true;
-            }
-            
-            // === АТАКА ===
-            client.interactionManager.attackEntity(client.player, target);
-            client.player.swingHand(Hand.MAIN_HAND);
-            
-            // Устанавливаем КД как у меча
-            attackCooldown = SWORD_CD_TICKS;
-            
-            if (willCrit) {
-                client.player.sendMessage(Text.literal("§c⚡ КРИТ! §7" + target.getName().getString()), true);
-            }
-            
-            // Возвращаем углы
-            client.player.setYaw(serverYaw);
-            client.player.setPitch(serverPitch);
+            RenderSystem.enableDepthTest();
+            RenderSystem.disableBlend();
         });
     }
-
-    private Entity findTarget(MinecraftClient client) {
-        Entity nearest = null;
-        double nearestDist = 4.2; // Безопасная дистанция
+    
+    // Получение увеличенного хитбокса (3x)
+    private Box getBigHitbox(Entity entity) {
+        Box normalBox = entity.getBoundingBox();
+        double width = (normalBox.maxX - normalBox.minX) * HITBOX_MULTIPLIER;
+        double height = (normalBox.maxY - normalBox.minY) * HITBOX_MULTIPLIER;
+        double centerX = (normalBox.minX + normalBox.maxX) / 2;
+        double centerY = (normalBox.minY + normalBox.maxY) / 2;
+        double centerZ = (normalBox.minZ + normalBox.maxZ) / 2;
         
-        Box box = client.player.getBoundingBox().expand(5.0);
-        List<Entity> entities = client.world.getOtherEntities(client.player, box);
-        
-        for (Entity e : entities) {
-            if (!(e instanceof LivingEntity)) continue;
-            if (e == client.player) continue;
-            if (e instanceof PlayerEntity && ((PlayerEntity)e).isCreative()) continue;
-            
-            double dist = client.player.distanceTo(e);
-            if (dist > nearestDist) continue;
-            if (!client.player.canSee(e)) continue;
-            
-            nearestDist = dist;
-            nearest = e;
+        return new Box(
+            centerX - width / 2,
+            centerY - height / 2,
+            centerZ - width / 2,
+            centerX + width / 2,
+            centerY + height / 2,
+            centerZ + width / 2
+        );
+    }
+    
+    // Цвет для обводки
+    private Color getEntityColor(Entity entity) {
+        if (entity instanceof PlayerEntity) {
+            return new Color(255, 0, 0, 200); // Красный для игроков
         }
-        return nearest;
+        if (entity.isAttackable()) {
+            return new Color(255, 165, 0, 200); // Оранжевый для враждебных
+        }
+        return new Color(0, 255, 0, 200); // Зелёный для нейтральных
+    }
+    
+    // Рисование обводки
+    private void drawBoxOutline(MatrixStack matrices, Box box, Color color) {
+        Tessellator tessellator = Tessellator.getInstance();
+        BufferBuilder buffer = tessellator.getBuffer();
+        
+        MatrixStack.Entry entry = matrices.peek();
+        var matrix = entry.getPositionMatrix();
+        
+        buffer.begin(VertexFormat.DrawMode.DEBUG_LINES, VertexFormats.POSITION_COLOR);
+        
+        Vec3d cameraPos = MinecraftClient.getInstance().gameRenderer.getCamera().getPos();
+        double x = box.minX - cameraPos.x;
+        double y = box.minY - cameraPos.y;
+        double z = box.minZ - cameraPos.z;
+        double w = box.maxX - box.minX;
+        double h = box.maxY - box.minY;
+        
+        float r = color.getRed() / 255f;
+        float g = color.getGreen() / 255f;
+        float b = color.getBlue() / 255f;
+        float a = color.getAlpha() / 255f;
+        
+        // Нижняя грань
+        buffer.vertex(matrix, (float)x, (float)y, (float)z).color(r, g, b, a).next();
+        buffer.vertex(matrix, (float)(x + w), (float)y, (float)z).color(r, g, b, a).next();
+        buffer.vertex(matrix, (float)(x + w), (float)y, (float)z).color(r, g, b, a).next();
+        buffer.vertex(matrix, (float)(x + w), (float)y, (float)(z + w)).color(r, g, b, a).next();
+        buffer.vertex(matrix, (float)(x + w), (float)y, (float)(z + w)).color(r, g, b, a).next();
+        buffer.vertex(matrix, (float)x, (float)y, (float)(z + w)).color(r, g, b, a).next();
+        buffer.vertex(matrix, (float)x, (float)y, (float)(z + w)).color(r, g, b, a).next();
+        buffer.vertex(matrix, (float)x, (float)y, (float)z).color(r, g, b, a).next();
+        
+        // Верхняя грань
+        buffer.vertex(matrix, (float)x, (float)(y + h), (float)z).color(r, g, b, a).next();
+        buffer.vertex(matrix, (float)(x + w), (float)(y + h), (float)z).color(r, g, b, a).next();
+        buffer.vertex(matrix, (float)(x + w), (float)(y + h), (float)z).color(r, g, b, a).next();
+        buffer.vertex(matrix, (float)(x + w), (float)(y + h), (float)(z + w)).color(r, g, b, a).next();
+        buffer.vertex(matrix, (float)(x + w), (float)(y + h), (float)(z + w)).color(r, g, b, a).next();
+        buffer.vertex(matrix, (float)x, (float)(y + h), (float)(z + w)).color(r, g, b, a).next();
+        buffer.vertex(matrix, (float)x, (float)(y + h), (float)(z + w)).color(r, g, b, a).next();
+        buffer.vertex(matrix, (float)x, (float)(y + h), (float)z).color(r, g, b, a).next();
+        
+        // Вертикальные рёбра
+        buffer.vertex(matrix, (float)x, (float)y, (float)z).color(r, g, b, a).next();
+        buffer.vertex(matrix, (float)x, (float)(y + h), (float)z).color(r, g, b, a).next();
+        buffer.vertex(matrix, (float)(x + w), (float)y, (float)z).color(r, g, b, a).next();
+        buffer.vertex(matrix, (float)(x + w), (float)(y + h), (float)z).color(r, g, b, a).next();
+        buffer.vertex(matrix, (float)(x + w), (float)y, (float)(z + w)).color(r, g, b, a).next();
+        buffer.vertex(matrix, (float)(x + w), (float)(y + h), (float)(z + w)).color(r, g, b, a).next();
+        buffer.vertex(matrix, (float)x, (float)y, (float)(z + w)).color(r, g, b, a).next();
+        buffer.vertex(matrix, (float)x, (float)(y + h), (float)(z + w)).color(r, g, b, a).next();
+        
+        tessellator.draw();
+    }
+    
+    // Рисование заливки
+    private void drawBoxFill(MatrixStack matrices, Box box, Color color) {
+        Tessellator tessellator = Tessellator.getInstance();
+        BufferBuilder buffer = tessellator.getBuffer();
+        
+        MatrixStack.Entry entry = matrices.peek();
+        var matrix = entry.getPositionMatrix();
+        
+        buffer.begin(VertexFormat.DrawMode.QUADS, VertexFormats.POSITION_COLOR);
+        
+        Vec3d cameraPos = MinecraftClient.getInstance().gameRenderer.getCamera().getPos();
+        double x = box.minX - cameraPos.x;
+        double y = box.minY - cameraPos.y;
+        double z = box.minZ - cameraPos.z;
+        double w = box.maxX - box.minX;
+        double h = box.maxY - box.minY;
+        
+        float r = color.getRed() / 255f;
+        float g = color.getGreen() / 255f;
+        float b = color.getBlue() / 255f;
+        float a = color.getAlpha() / 255f;
+        
+        // Передняя грань
+        buffer.vertex(matrix, (float)x, (float)y, (float)z).color(r, g, b, a).next();
+        buffer.vertex(matrix, (float)(x + w), (float)y, (float)z).color(r, g, b, a).next();
+        buffer.vertex(matrix, (float)(x + w), (float)(y + h), (float)z).color(r, g, b, a).next();
+        buffer.vertex(matrix, (float)x, (float)(y + h), (float)z).color(r, g, b, a).next();
+        
+        // Задняя грань
+        buffer.vertex(matrix, (float)x, (float)y, (float)(z + w)).color(r, g, b, a).next();
+        buffer.vertex(matrix, (float)x, (float)(y + h), (float)(z + w)).color(r, g, b, a).next();
+        buffer.vertex(matrix, (float)(x + w), (float)(y + h), (float)(z + w)).color(r, g, b, a).next();
+        buffer.vertex(matrix, (float)(x + w), (float)y, (float)(z + w)).color(r, g, b, a).next();
+        
+        // Левая грань
+        buffer.vertex(matrix, (float)x, (float)y, (float)z).color(r, g, b, a).next();
+        buffer.vertex(matrix, (float)x, (float)(y + h), (float)z).color(r, g, b, a).next();
+        buffer.vertex(matrix, (float)x, (float)(y + h), (float)(z + w)).color(r, g, b, a).next();
+        buffer.vertex(matrix, (float)x, (float)y, (float)(z + w)).color(r, g, b, a).next();
+        
+        // Правая грань
+        buffer.vertex(matrix, (float)(x + w), (float)y, (float)z).color(r, g, b, a).next();
+        buffer.vertex(matrix, (float)(x + w), (float)y, (float)(z + w)).color(r, g, b, a).next();
+        buffer.vertex(matrix, (float)(x + w), (float)(y + h), (float)(z + w)).color(r, g, b, a).next();
+        buffer.vertex(matrix, (float)(x + w), (float)(y + h), (float)z).color(r, g, b, a).next();
+        
+        // Верхняя грань
+        buffer.vertex(matrix, (float)x, (float)(y + h), (float)z).color(r, g, b, a).next();
+        buffer.vertex(matrix, (float)(x + w), (float)(y + h), (float)z).color(r, g, b, a).next();
+        buffer.vertex(matrix, (float)(x + w), (float)(y + h), (float)(z + w)).color(r, g, b, a).next();
+        buffer.vertex(matrix, (float)x, (float)(y + h), (float)(z + w)).color(r, g, b, a).next();
+        
+        // Нижняя грань
+        buffer.vertex(matrix, (float)x, (float)y, (float)z).color(r, g, b, a).next();
+        buffer.vertex(matrix, (float)x, (float)y, (float)(z + w)).color(r, g, b, a).next();
+        buffer.vertex(matrix, (float)(x + w), (float)y, (float)(z + w)).color(r, g, b, a).next();
+        buffer.vertex(matrix, (float)(x + w), (float)y, (float)z).color(r, g, b, a).next();
+        
+        tessellator.draw();
     }
 }
