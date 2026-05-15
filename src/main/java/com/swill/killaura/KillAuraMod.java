@@ -6,155 +6,149 @@ import net.fabricmc.fabric.api.client.keybinding.v1.KeyBindingHelper;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.option.KeyBinding;
 import net.minecraft.client.util.InputUtil;
+import net.minecraft.entity.Entity;
+import net.minecraft.entity.LivingEntity;
+import net.minecraft.entity.player.PlayerEntity;
+import net.minecraft.item.SwordItem;
 import net.minecraft.text.Text;
-import net.minecraft.util.math.BlockPos;
-import net.minecraft.util.math.Vec3d;
+import net.minecraft.util.Hand;
 import net.minecraft.util.math.Box;
+import net.minecraft.util.math.Vec3d;
 import org.lwjgl.glfw.GLFW;
 
+import java.util.List;
 import java.util.Random;
 
 public class KillAuraMod implements ModInitializer {
 
-    private static boolean clipEnabled = false;
-    private static KeyBinding toggleKey;
+    private static boolean enabled = false;
+    private static KeyBinding keyBinding;
     private static final Random random = new Random();
     
-    // Обходы античита
-    private static int tickCounter = 0;
-    private static Vec3d lastPos = Vec3d.ZERO;
-    private static boolean wasInWall = false;
-    private static int noClipMode = 1; // 1 = полный обход
+    // Тайминг меча (12 тиков = 0.6 сек)
+    private static int attackCooldown = 0;
+    private static final int SWORD_CD_TICKS = 12;
+    
+    // Плавный поворот (камера не дёргается)
+    private static float targetYaw = 0;
+    private static float targetPitch = 0;
+    private static int rotationTicks = 0;
+    private static float serverYaw = 0;
+    private static float serverPitch = 0;
+    
+    // Крит шанс (как у меча)
+    private static int critChance = 85;
 
     @Override
     public void onInitialize() {
-        System.out.println("[WallClip] Полный обход стен загружен! Нажми R");
+        System.out.println("[KillAura] Беспалевная KillAura загружена! Нажми R");
 
-        toggleKey = KeyBindingHelper.registerKeyBinding(new KeyBinding(
-                "key.wallclip.toggle",
+        keyBinding = KeyBindingHelper.registerKeyBinding(new KeyBinding(
+                "key.killaura.toggle",
                 InputUtil.Type.KEYSYM,
                 GLFW.GLFW_KEY_R,
-                "category.wallclip"
+                "category.killaura"
         ));
 
         ClientTickEvents.END_CLIENT_TICK.register(client -> {
             if (client.player == null) return;
 
-            if (toggleKey.wasPressed()) {
-                clipEnabled = !clipEnabled;
-                String status = clipEnabled ? "§aВКЛЮЧЕН" : "§cВЫКЛЮЧЕН";
-                client.player.sendMessage(Text.literal("§l[WallClip] §rПрохождение сквозь стены " + status), true);
-                
-                if (clipEnabled) {
-                    client.player.noClip = true;
-                    client.player.sendMessage(Text.literal("§7Теперь ты проходишь через ЛЮБЫЕ блоки! Тебя не отбрасывает назад"), true);
-                } else {
-                    client.player.noClip = false;
-                }
+            if (keyBinding.wasPressed()) {
+                enabled = !enabled;
+                String status = enabled ? "§aВКЛЮЧЕН" : "§cВЫКЛЮЧЕН";
+                client.player.sendMessage(Text.literal("§l[KillAura] §r" + status), true);
             }
 
-            if (!clipEnabled) return;
+            if (!enabled) return;
+            if (client.currentScreen != null) return;
             
-            // ========== ОСНОВНОЙ ФАЗИНГ (NoClip) ==========
-            // Включаем режим прохождения через блоки
-            client.player.noClip = true;
+            // === ТОЛЬКО МЕЧ! ===
+            boolean hasSword = client.player.getMainHandStack().getItem() instanceof SwordItem;
+            if (!hasSword) return;
             
-            // Отключаем коллизии с блоками
-            client.player.setBoundingBox(client.player.getBoundingBox().contract(0.01, 0.01, 0.01));
-            
-            // ========== ПРЕДОТВРАЩАЕМ ОТБРАСЫВАНИЕ НАЗАД ==========
-            // Сохраняем позицию если сервер пытается откатить
-            if (lastPos == Vec3d.ZERO) {
-                lastPos = client.player.getPos();
+            // === ТАЙМИНГ МЕЧА (КТ как у меча) ===
+            // Меч бьёт раз в 12 тиков (0.6 сек)
+            if (attackCooldown > 0) {
+                attackCooldown--;
+                return;
             }
             
-            // Если сервер отбрасывает нас назад (античит) - возвращаемся обратно
-            if (client.player.getPos().distanceTo(lastPos) < -0.1) {
-                client.player.setPosition(lastPos.x, lastPos.y, lastPos.z);
-                client.player.sendMessage(Text.literal("§c⚠ Античит пытается отбросить! Обхожу..."), true);
-            }
+            // Дополнительная проверка зарядки меча
+            float cooldown = client.player.getAttackCooldownProgress(0);
+            if (cooldown < 0.98f) return;
+
+            // Поиск цели
+            Entity target = findTarget(client);
+            if (target == null) return;
             
-            // ========== АКТИВНОЕ ДВИЖЕНИЕ СКВОЗЬ СТЕНЫ ==========
-            double moveSpeed = 0.5;
-            Vec3d pos = client.player.getPos();
-            
-            // Движение вперёд
-            if (client.options.forwardKey.isPressed()) {
-                double yaw = Math.toRadians(client.player.getYaw());
-                double moveX = -Math.sin(yaw) * moveSpeed;
-                double moveZ = Math.cos(yaw) * moveSpeed;
-                client.player.setPosition(pos.x + moveX, pos.y, pos.z + moveZ);
-                lastPos = client.player.getPos();
-            }
-            
-            // Движение назад
-            if (client.options.backKey.isPressed()) {
-                double yaw = Math.toRadians(client.player.getYaw());
-                double moveX = Math.sin(yaw) * moveSpeed;
-                double moveZ = -Math.cos(yaw) * moveSpeed;
-                client.player.setPosition(pos.x + moveX, pos.y, pos.z + moveZ);
-                lastPos = client.player.getPos();
-            }
-            
-            // Движение влево
-            if (client.options.leftKey.isPressed()) {
-                double yaw = Math.toRadians(client.player.getYaw() - 90);
-                double moveX = -Math.sin(yaw) * moveSpeed;
-                double moveZ = Math.cos(yaw) * moveSpeed;
-                client.player.setPosition(pos.x + moveX, pos.y, pos.z + moveZ);
-                lastPos = client.player.getPos();
-            }
-            
-            // Движение вправо
-            if (client.options.rightKey.isPressed()) {
-                double yaw = Math.toRadians(client.player.getYaw() + 90);
-                double moveX = -Math.sin(yaw) * moveSpeed;
-                double moveZ = Math.cos(yaw) * moveSpeed;
-                client.player.setPosition(pos.x + moveX, pos.y, pos.z + moveZ);
-                lastPos = client.player.getPos();
-            }
-            
-            // Движение вверх
-            if (client.options.jumpKey.isPressed()) {
-                client.player.setPosition(pos.x, pos.y + moveSpeed, pos.z);
-                lastPos = client.player.getPos();
-            }
-            
-            // Движение вниз (Shift)
-            if (client.options.sneakKey.isPressed()) {
-                client.player.setPosition(pos.x, pos.y - moveSpeed, pos.z);
-                lastPos = client.player.getPos();
-            }
-            
-            // ========== ОБХОД АНТИЧИТА ==========
-            tickCounter++;
-            if (tickCounter > 8) {
-                tickCounter = 0;
+            // === ПЛАВНЫЙ ПОВОРОТ (камера не дёргается) ===
+            if (rotationTicks == 0) {
+                Vec3d targetPos = target.getBoundingBox().getCenter();
+                double dx = targetPos.x - client.player.getX();
+                double dy = targetPos.y - client.player.getEyeY();
+                double dz = targetPos.z - client.player.getZ();
+                double dh = Math.sqrt(dx * dx + dz * dz);
                 
-                // Микро-движения для имитации нормы
-                if (random.nextInt(100) < 15) {
-                    double offsetX = (random.nextDouble() - 0.5) * 0.02;
-                    double offsetZ = (random.nextDouble() - 0.5) * 0.02;
-                    client.player.setPosition(
-                        client.player.getX() + offsetX,
-                        client.player.getY(),
-                        client.player.getZ() + offsetZ
-                    );
-                }
+                targetYaw = (float) Math.toDegrees(Math.atan2(dz, dx)) - 90;
+                targetPitch = (float) -Math.toDegrees(Math.atan2(dy, dh));
+                rotationTicks = 2;
             }
             
-            // ========== ЗАПОМИНАЕМ ПОЗИЦИЮ КАЖДЫЙ ТИК ==========
-            if (client.player.age % 5 == 0) {
-                lastPos = client.player.getPos();
+            float currentYaw = client.player.getYaw();
+            float currentPitch = client.player.getPitch();
+            float newYaw = currentYaw + (targetYaw - currentYaw) / rotationTicks;
+            float newPitch = currentPitch + (targetPitch - currentPitch) / rotationTicks;
+            rotationTicks--;
+            
+            // Silent Aim
+            serverYaw = client.player.getYaw();
+            serverPitch = client.player.getPitch();
+            client.player.setYaw(newYaw);
+            client.player.setPitch(newPitch);
+            
+            // === КРИТ (как у меча) ===
+            boolean willCrit = false;
+            if (client.player.isOnGround() && random.nextInt(100) < critChance) {
+                client.player.jump();
+                willCrit = true;
             }
             
-            // ========== ОТКЛЮЧАЕМ ПРОВЕРКУ КОЛЛИЗИЙ ==========
-            client.player.setOnGround(true);
+            // === АТАКА ===
+            client.interactionManager.attackEntity(client.player, target);
+            client.player.swingHand(Hand.MAIN_HAND);
             
-            // ========== ДОПОЛНИТЕЛЬНЫЙ ОБХОД: Имитация полёта ==========
-            if (client.player.getVelocity().y < -0.5) {
-                client.player.setVelocity(client.player.getVelocity().x, -0.1, client.player.getVelocity().z);
+            // Устанавливаем КД как у меча
+            attackCooldown = SWORD_CD_TICKS;
+            
+            if (willCrit) {
+                client.player.sendMessage(Text.literal("§c⚡ КРИТ! §7" + target.getName().getString()), true);
             }
+            
+            // Возвращаем углы
+            client.player.setYaw(serverYaw);
+            client.player.setPitch(serverPitch);
         });
+    }
+
+    private Entity findTarget(MinecraftClient client) {
+        Entity nearest = null;
+        double nearestDist = 4.2; // Безопасная дистанция
+        
+        Box box = client.player.getBoundingBox().expand(5.0);
+        List<Entity> entities = client.world.getOtherEntities(client.player, box);
+        
+        for (Entity e : entities) {
+            if (!(e instanceof LivingEntity)) continue;
+            if (e == client.player) continue;
+            if (e instanceof PlayerEntity && ((PlayerEntity)e).isCreative()) continue;
+            
+            double dist = client.player.distanceTo(e);
+            if (dist > nearestDist) continue;
+            if (!client.player.canSee(e)) continue;
+            
+            nearestDist = dist;
+            nearest = e;
+        }
+        return nearest;
     }
 }
