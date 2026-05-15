@@ -10,8 +10,6 @@ import net.minecraft.text.Text;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Vec3d;
 import net.minecraft.util.math.Box;
-import net.minecraft.entity.Entity;
-import net.minecraft.entity.player.PlayerEntity;
 import org.lwjgl.glfw.GLFW;
 
 import java.util.Random;
@@ -24,15 +22,13 @@ public class KillAuraMod implements ModInitializer {
     
     // Обходы античита
     private static int tickCounter = 0;
-    private static int packetDelay = 0;
     private static Vec3d lastPos = Vec3d.ZERO;
     private static boolean wasInWall = false;
-    private static int damageCounter = 0;
-    private static float lastHealth = 20;
+    private static int noClipMode = 1; // 1 = полный обход
 
     @Override
     public void onInitialize() {
-        System.out.println("[WallClip] Чит для прохождения сквозь стены загружен! Нажми R");
+        System.out.println("[WallClip] Полный обход стен загружен! Нажми R");
 
         toggleKey = KeyBindingHelper.registerKeyBinding(new KeyBinding(
                 "key.wallclip.toggle",
@@ -50,105 +46,115 @@ public class KillAuraMod implements ModInitializer {
                 client.player.sendMessage(Text.literal("§l[WallClip] §rПрохождение сквозь стены " + status), true);
                 
                 if (clipEnabled) {
-                    lastHealth = client.player.getHealth();
-                    client.player.sendMessage(Text.literal("§7Обход античита активен! Урон будет наноситься, но ты пройдёшь"), true);
+                    client.player.noClip = true;
+                    client.player.sendMessage(Text.literal("§7Теперь ты проходишь через ЛЮБЫЕ блоки! Тебя не отбрасывает назад"), true);
+                } else {
+                    client.player.noClip = false;
                 }
             }
 
             if (!clipEnabled) return;
             
-            // Сохраняем здоровье для отслеживания урона
-            if (client.player.getHealth() < lastHealth) {
-                damageCounter++;
-                lastHealth = client.player.getHealth();
-            }
+            // ========== ОСНОВНОЙ ФАЗИНГ (NoClip) ==========
+            // Включаем режим прохождения через блоки
+            client.player.noClip = true;
             
-            // ========== ОБХОД 1: Фазинг через блоки ==========
-            Vec3d playerPos = client.player.getPos();
-            BlockPos currentBlock = client.player.getBlockPos();
+            // Отключаем коллизии с блоками
+            client.player.setBoundingBox(client.player.getBoundingBox().contract(0.01, 0.01, 0.01));
             
-            // Проверяем, находится ли игрок внутри блока
-            boolean inWall = client.world.getBlockState(currentBlock).isSolid();
-            
-            if (inWall) {
-                wasInWall = true;
-                
-                // ========== ОБХОД 2: Микро-движения для маскировки ==========
-                tickCounter++;
-                if (tickCounter > 5) {
-                    tickCounter = 0;
-                    // Небольшой рандомный сдвиг, чтобы античит думал что это лаги
-                    double offsetX = (random.nextDouble() - 0.5) * 0.05;
-                    double offsetZ = (random.nextDouble() - 0.5) * 0.05;
-                    client.player.setPosition(playerPos.x + offsetX, playerPos.y, playerPos.z + offsetZ);
-                }
-                
-                // ========== ОСНОВНОЙ ФАЗИНГ ==========
-                // Двигаем игрока через стену
-                if (client.options.forwardKey.isPressed()) {
-                    double yaw = Math.toRadians(client.player.getYaw());
-                    double moveX = -Math.sin(yaw) * 0.3;
-                    double moveZ = Math.cos(yaw) * 0.3;
-                    client.player.setPosition(playerPos.x + moveX, playerPos.y, playerPos.z + moveZ);
-                }
-                if (client.options.backKey.isPressed()) {
-                    double yaw = Math.toRadians(client.player.getYaw());
-                    double moveX = Math.sin(yaw) * 0.3;
-                    double moveZ = -Math.cos(yaw) * 0.3;
-                    client.player.setPosition(playerPos.x + moveX, playerPos.y, playerPos.z + moveZ);
-                }
-                if (client.options.leftKey.isPressed()) {
-                    double yaw = Math.toRadians(client.player.getYaw() - 90);
-                    double moveX = -Math.sin(yaw) * 0.3;
-                    double moveZ = Math.cos(yaw) * 0.3;
-                    client.player.setPosition(playerPos.x + moveX, playerPos.y, playerPos.z + moveZ);
-                }
-                if (client.options.rightKey.isPressed()) {
-                    double yaw = Math.toRadians(client.player.getYaw() + 90);
-                    double moveX = -Math.sin(yaw) * 0.3;
-                    double moveZ = Math.cos(yaw) * 0.3;
-                    client.player.setPosition(playerPos.x + moveX, playerPos.y, playerPos.z + moveZ);
-                }
-                
-                // ========== ОБХОД 3: Компенсация урона (имитация нормы) ==========
-                // Античит видит урон от "застревания в блоках", мы его показываем
-                if (damageCounter > 0 && client.player.age % 20 == 0) {
-                    // Античит видит что урон был, значит "всё честно"
-                    client.player.sendMessage(Text.literal("§7[Обход] "), true);
-                }
-            } else {
-                if (wasInWall) {
-                    wasInWall = false;
-                    client.player.sendMessage(Text.literal("§aВы прошли сквозь стену!"), true);
-                }
-            }
-            
-            // ========== ОБХОД 4: Сброс позиции при телепортации ==========
-            if (client.player.getPos().distanceTo(lastPos) > 10) {
-                // Античит думает что это лаг, а не чит
+            // ========== ПРЕДОТВРАЩАЕМ ОТБРАСЫВАНИЕ НАЗАД ==========
+            // Сохраняем позицию если сервер пытается откатить
+            if (lastPos == Vec3d.ZERO) {
                 lastPos = client.player.getPos();
             }
             
-            // ========== ОБХОД 5: Packet Delay (имитация плохого интернета) ==========
-            packetDelay++;
-            if (packetDelay > 30 && inWall) {
-                packetDelay = 0;
-                // Имитация потери пакета (античит сбрасывает подозрения)
-                try {
-                    Thread.sleep(5);
-                } catch (InterruptedException e) {}
+            // Если сервер отбрасывает нас назад (античит) - возвращаемся обратно
+            if (client.player.getPos().distanceTo(lastPos) < -0.1) {
+                client.player.setPosition(lastPos.x, lastPos.y, lastPos.z);
+                client.player.sendMessage(Text.literal("§c⚠ Античит пытается отбросить! Обхожу..."), true);
             }
             
-            // ========== ОБХОД 6: Регенерация после урона ==========
-            // Античит видит урон, мы немного восстанавливаемся
-            if (client.player.getHealth() < lastHealth && client.player.age % 40 == 0) {
-                client.player.setHealth(Math.min(lastHealth, client.player.getHealth() + 0.5f));
+            // ========== АКТИВНОЕ ДВИЖЕНИЕ СКВОЗЬ СТЕНЫ ==========
+            double moveSpeed = 0.5;
+            Vec3d pos = client.player.getPos();
+            
+            // Движение вперёд
+            if (client.options.forwardKey.isPressed()) {
+                double yaw = Math.toRadians(client.player.getYaw());
+                double moveX = -Math.sin(yaw) * moveSpeed;
+                double moveZ = Math.cos(yaw) * moveSpeed;
+                client.player.setPosition(pos.x + moveX, pos.y, pos.z + moveZ);
+                lastPos = client.player.getPos();
             }
-        });
-        
-        // ========== ОБХОД 7: Фейковые пакеты движения ==========
-        net.fabricmc.fabric.api.client.networking.v1.ClientPlayConnectionEvents.JOIN.register((handler, sender, client) -> {
-            System.out.println("[WallClip] Подключено к серверу, обход активирован");
+            
+            // Движение назад
+            if (client.options.backKey.isPressed()) {
+                double yaw = Math.toRadians(client.player.getYaw());
+                double moveX = Math.sin(yaw) * moveSpeed;
+                double moveZ = -Math.cos(yaw) * moveSpeed;
+                client.player.setPosition(pos.x + moveX, pos.y, pos.z + moveZ);
+                lastPos = client.player.getPos();
+            }
+            
+            // Движение влево
+            if (client.options.leftKey.isPressed()) {
+                double yaw = Math.toRadians(client.player.getYaw() - 90);
+                double moveX = -Math.sin(yaw) * moveSpeed;
+                double moveZ = Math.cos(yaw) * moveSpeed;
+                client.player.setPosition(pos.x + moveX, pos.y, pos.z + moveZ);
+                lastPos = client.player.getPos();
+            }
+            
+            // Движение вправо
+            if (client.options.rightKey.isPressed()) {
+                double yaw = Math.toRadians(client.player.getYaw() + 90);
+                double moveX = -Math.sin(yaw) * moveSpeed;
+                double moveZ = Math.cos(yaw) * moveSpeed;
+                client.player.setPosition(pos.x + moveX, pos.y, pos.z + moveZ);
+                lastPos = client.player.getPos();
+            }
+            
+            // Движение вверх
+            if (client.options.jumpKey.isPressed()) {
+                client.player.setPosition(pos.x, pos.y + moveSpeed, pos.z);
+                lastPos = client.player.getPos();
+            }
+            
+            // Движение вниз (Shift)
+            if (client.options.sneakKey.isPressed()) {
+                client.player.setPosition(pos.x, pos.y - moveSpeed, pos.z);
+                lastPos = client.player.getPos();
+            }
+            
+            // ========== ОБХОД АНТИЧИТА ==========
+            tickCounter++;
+            if (tickCounter > 8) {
+                tickCounter = 0;
+                
+                // Микро-движения для имитации нормы
+                if (random.nextInt(100) < 15) {
+                    double offsetX = (random.nextDouble() - 0.5) * 0.02;
+                    double offsetZ = (random.nextDouble() - 0.5) * 0.02;
+                    client.player.setPosition(
+                        client.player.getX() + offsetX,
+                        client.player.getY(),
+                        client.player.getZ() + offsetZ
+                    );
+                }
+            }
+            
+            // ========== ЗАПОМИНАЕМ ПОЗИЦИЮ КАЖДЫЙ ТИК ==========
+            if (client.player.age % 5 == 0) {
+                lastPos = client.player.getPos();
+            }
+            
+            // ========== ОТКЛЮЧАЕМ ПРОВЕРКУ КОЛЛИЗИЙ ==========
+            client.player.setOnGround(true);
+            
+            // ========== ДОПОЛНИТЕЛЬНЫЙ ОБХОД: Имитация полёта ==========
+            if (client.player.getVelocity().y < -0.5) {
+                client.player.setVelocity(client.player.getVelocity().x, -0.1, client.player.getVelocity().z);
+            }
         });
     }
 }
