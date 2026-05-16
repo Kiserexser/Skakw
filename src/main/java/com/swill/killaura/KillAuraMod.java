@@ -3,44 +3,49 @@ package com.swill.killaura;
 import net.fabricmc.api.ModInitializer;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.fabric.api.client.keybinding.v1.KeyBindingHelper;
-import net.fabricmc.fabric.api.client.rendering.v1.WorldRenderEvents;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.option.KeyBinding;
 import net.minecraft.client.util.InputUtil;
-import net.minecraft.client.util.math.MatrixStack;
-import net.minecraft.client.render.VertexFormats;
-import net.minecraft.client.render.VertexFormat;
-import net.minecraft.client.render.Tessellator;
-import net.minecraft.client.render.BufferBuilder;
-import net.minecraft.entity.Entity;
-import net.minecraft.entity.LivingEntity;
-import net.minecraft.entity.player.PlayerEntity;
+import net.minecraft.item.*;
 import net.minecraft.text.Text;
-import net.minecraft.util.math.Box;
+import net.minecraft.util.Hand;
+import net.minecraft.util.hit.BlockHitResult;
+import net.minecraft.util.math.BlockPos;
+import net.minecraft.util.math.Direction;
 import net.minecraft.util.math.Vec3d;
-import net.minecraft.util.math.MathHelper;
 import org.lwjgl.glfw.GLFW;
-import com.mojang.blaze3d.systems.RenderSystem;
 
-import java.awt.Color;
+import java.util.*;
 
 public class KillAuraMod implements ModInitializer {
 
     private static boolean enabled = false;
     private static KeyBinding toggleKey;
     
-    // 3x хитбоксы
-    private static final float HITBOX_MULTIPLIER = 3.0f;
+    private enum Stage {
+        CHECK_AREA,         // 0. Проверка радиуса
+        PLANT_SAPLING,      // 1. Посадка
+        USE_BONE_MEAL,      // 2. Костная мука
+        BREAK_LEAVES,       // 3. Листва мотыгой
+        CHOP_WOOD           // 4. Дуб топором
+    }
+    
+    private static Stage currentStage = Stage.CHECK_AREA;
+    private static BlockPos saplingPos = null;
+    private static Queue<BlockPos> leavesBlocks = new LinkedList<>();
+    private static Queue<BlockPos> woodBlocks = new LinkedList<>();
+    private static int actionDelay = 0;
+    private static int boneMealAttempts = 0;
 
     @Override
     public void onInitialize() {
-        System.out.println("[3xHitbox] Мод загружен! Нажми R для вкл/выкл");
+        System.out.println("[SmartFarmer] Умный фермер загружен! R - вкл/выкл");
 
         toggleKey = KeyBindingHelper.registerKeyBinding(new KeyBinding(
-                "key.hitbox.toggle",
+                "key.smartfarmer.toggle",
                 InputUtil.Type.KEYSYM,
                 GLFW.GLFW_KEY_R,
-                "category.hitbox"
+                "category.smartfarmer"
         ));
 
         ClientTickEvents.END_CLIENT_TICK.register(client -> {
@@ -48,186 +53,345 @@ public class KillAuraMod implements ModInitializer {
 
             if (toggleKey.wasPressed()) {
                 enabled = !enabled;
-                String status = enabled ? "§aВКЛЮЧЕН §7(3x хитбоксы)" : "§cВЫКЛЮЧЕН";
-                client.player.sendMessage(Text.literal("§l[3xHitbox] §r" + status), true);
+                client.player.sendMessage(Text.literal("§l[SmartFarmer] §r" + (enabled ? "§aON" : "§cOFF")), true);
+                if (enabled) {
+                    currentStage = Stage.CHECK_AREA;
+                }
             }
-        });
-        
-        // Рендер 3x хитбоксов и обводки
-        WorldRenderEvents.LAST.register(context -> {
             if (!enabled) return;
             
-            MatrixStack matrices = context.matrixStack();
-            MinecraftClient client = MinecraftClient.getInstance();
-            if (client.player == null) return;
-            
-            RenderSystem.enableBlend();
-            RenderSystem.defaultBlendFunc();
-            RenderSystem.disableDepthTest();
-            
-            for (Entity entity : client.world.getEntities()) {
-                if (!(entity instanceof LivingEntity)) continue;
-                if (entity == client.player) continue;
-                
-                // Увеличенный хитбокс (3x)
-                Box bigBox = getBigHitbox(entity);
-                
-                // Цвет обводки
-                Color color = getEntityColor(entity);
-                
-                // Рисуем обводку и заливку
-                drawBoxOutline(matrices, bigBox, color);
-                drawBoxFill(matrices, bigBox, new Color(color.getRed(), color.getGreen(), color.getBlue(), 40));
+            if (actionDelay > 0) {
+                actionDelay--;
+                return;
             }
-            
-            RenderSystem.enableDepthTest();
-            RenderSystem.disableBlend();
+
+            switch (currentStage) {
+                case CHECK_AREA:
+                    checkArea(client);
+                    break;
+                case PLANT_SAPLING:
+                    plantSapling(client);
+                    break;
+                case USE_BONE_MEAL:
+                    useBoneMeal(client);
+                    break;
+                case BREAK_LEAVES:
+                    breakLeaves(client);
+                    break;
+                case CHOP_WOOD:
+                    chopWood(client);
+                    break;
+            }
         });
     }
     
-    // Получение увеличенного хитбокса (3x)
-    private Box getBigHitbox(Entity entity) {
-        Box normalBox = entity.getBoundingBox();
-        double width = (normalBox.maxX - normalBox.minX) * HITBOX_MULTIPLIER;
-        double height = (normalBox.maxY - normalBox.minY) * HITBOX_MULTIPLIER;
-        double centerX = (normalBox.minX + normalBox.maxX) / 2;
-        double centerY = (normalBox.minY + normalBox.maxY) / 2;
-        double centerZ = (normalBox.minZ + normalBox.maxZ) / 2;
+    // ========== 0. ПРОВЕРКА РАДИУСА 10 БЛОКОВ ==========
+    private void checkArea(MinecraftClient client) {
+        boolean hasWood = false;
+        boolean hasLeaves = false;
         
-        return new Box(
-            centerX - width / 2,
-            centerY - height / 2,
-            centerZ - width / 2,
-            centerX + width / 2,
-            centerY + height / 2,
-            centerZ + width / 2
-        );
-    }
-    
-    // Цвет для обводки
-    private Color getEntityColor(Entity entity) {
-        if (entity instanceof PlayerEntity) {
-            return new Color(255, 0, 0, 200); // Красный для игроков
+        BlockPos center = client.player.getBlockPos();
+        
+        // Проверяем радиус 10 блоков
+        for (int dx = -10; dx <= 10; dx++) {
+            for (int dy = -10; dy <= 10; dy++) {
+                for (int dz = -10; dz <= 10; dz++) {
+                    BlockPos p = center.add(dx, dy, dz);
+                    String name = client.world.getBlockState(p).getBlock().getName().getString().toLowerCase();
+                    
+                    if (name.contains("log") || name.contains("wood")) {
+                        hasWood = true;
+                    }
+                    if (name.contains("leaves")) {
+                        hasLeaves = true;
+                    }
+                }
+            }
         }
-        if (entity.isAttackable()) {
-            return new Color(255, 165, 0, 200); // Оранжевый для враждебных
+        
+        if (hasWood || hasLeaves) {
+            // Есть дерево или листва → НЕ САЖАЕМ
+            client.player.sendMessage(Text.literal("§c🚫 В радиусе 10 блоков есть дерево/листва! Саженец НЕ посажен"), true);
+            actionDelay = 40;
+            // Если есть дерево/листва - рубим их
+            if (hasWood) {
+                scanNearbyTree(client, center);
+                if (!woodBlocks.isEmpty()) {
+                    currentStage = Stage.CHOP_WOOD;
+                    client.player.sendMessage(Text.literal("§eНайдено дерево! Рублю..."), true);
+                }
+            } else if (hasLeaves) {
+                scanNearbyLeaves(client, center);
+                if (!leavesBlocks.isEmpty()) {
+                    currentStage = Stage.BREAK_LEAVES;
+                    client.player.sendMessage(Text.literal("§eНайдена листва! Убираю..."), true);
+                }
+            }
+        } else {
+            // Нет дерева → можно сажать
+            currentStage = Stage.PLANT_SAPLING;
+            client.player.sendMessage(Text.literal("§a✅ Радиус чист! Можно сажать саженец"), true);
         }
-        return new Color(0, 255, 0, 200); // Зелёный для нейтральных
     }
     
-    // Рисование обводки
-    private void drawBoxOutline(MatrixStack matrices, Box box, Color color) {
-        Tessellator tessellator = Tessellator.getInstance();
-        BufferBuilder buffer = tessellator.getBuffer();
+    // Сканирование дерева поблизости
+    private void scanNearbyTree(MinecraftClient client, BlockPos center) {
+        woodBlocks.clear();
+        leavesBlocks.clear();
         
-        MatrixStack.Entry entry = matrices.peek();
-        var matrix = entry.getPositionMatrix();
-        
-        buffer.begin(VertexFormat.DrawMode.DEBUG_LINES, VertexFormats.POSITION_COLOR);
-        
-        Vec3d cameraPos = MinecraftClient.getInstance().gameRenderer.getCamera().getPos();
-        double x = box.minX - cameraPos.x;
-        double y = box.minY - cameraPos.y;
-        double z = box.minZ - cameraPos.z;
-        double w = box.maxX - box.minX;
-        double h = box.maxY - box.minY;
-        
-        float r = color.getRed() / 255f;
-        float g = color.getGreen() / 255f;
-        float b = color.getBlue() / 255f;
-        float a = color.getAlpha() / 255f;
-        
-        // Нижняя грань
-        buffer.vertex(matrix, (float)x, (float)y, (float)z).color(r, g, b, a).next();
-        buffer.vertex(matrix, (float)(x + w), (float)y, (float)z).color(r, g, b, a).next();
-        buffer.vertex(matrix, (float)(x + w), (float)y, (float)z).color(r, g, b, a).next();
-        buffer.vertex(matrix, (float)(x + w), (float)y, (float)(z + w)).color(r, g, b, a).next();
-        buffer.vertex(matrix, (float)(x + w), (float)y, (float)(z + w)).color(r, g, b, a).next();
-        buffer.vertex(matrix, (float)x, (float)y, (float)(z + w)).color(r, g, b, a).next();
-        buffer.vertex(matrix, (float)x, (float)y, (float)(z + w)).color(r, g, b, a).next();
-        buffer.vertex(matrix, (float)x, (float)y, (float)z).color(r, g, b, a).next();
-        
-        // Верхняя грань
-        buffer.vertex(matrix, (float)x, (float)(y + h), (float)z).color(r, g, b, a).next();
-        buffer.vertex(matrix, (float)(x + w), (float)(y + h), (float)z).color(r, g, b, a).next();
-        buffer.vertex(matrix, (float)(x + w), (float)(y + h), (float)z).color(r, g, b, a).next();
-        buffer.vertex(matrix, (float)(x + w), (float)(y + h), (float)(z + w)).color(r, g, b, a).next();
-        buffer.vertex(matrix, (float)(x + w), (float)(y + h), (float)(z + w)).color(r, g, b, a).next();
-        buffer.vertex(matrix, (float)x, (float)(y + h), (float)(z + w)).color(r, g, b, a).next();
-        buffer.vertex(matrix, (float)x, (float)(y + h), (float)(z + w)).color(r, g, b, a).next();
-        buffer.vertex(matrix, (float)x, (float)(y + h), (float)z).color(r, g, b, a).next();
-        
-        // Вертикальные рёбра
-        buffer.vertex(matrix, (float)x, (float)y, (float)z).color(r, g, b, a).next();
-        buffer.vertex(matrix, (float)x, (float)(y + h), (float)z).color(r, g, b, a).next();
-        buffer.vertex(matrix, (float)(x + w), (float)y, (float)z).color(r, g, b, a).next();
-        buffer.vertex(matrix, (float)(x + w), (float)(y + h), (float)z).color(r, g, b, a).next();
-        buffer.vertex(matrix, (float)(x + w), (float)y, (float)(z + w)).color(r, g, b, a).next();
-        buffer.vertex(matrix, (float)(x + w), (float)(y + h), (float)(z + w)).color(r, g, b, a).next();
-        buffer.vertex(matrix, (float)x, (float)y, (float)(z + w)).color(r, g, b, a).next();
-        buffer.vertex(matrix, (float)x, (float)(y + h), (float)(z + w)).color(r, g, b, a).next();
-        
-        tessellator.draw();
+        for (int dx = -10; dx <= 10; dx++) {
+            for (int dy = -10; dy <= 10; dy++) {
+                for (int dz = -10; dz <= 10; dz++) {
+                    BlockPos p = center.add(dx, dy, dz);
+                    String name = client.world.getBlockState(p).getBlock().getName().getString().toLowerCase();
+                    
+                    if (name.contains("log") || name.contains("wood")) {
+                        woodBlocks.add(p);
+                    }
+                    if (name.contains("leaves")) {
+                        leavesBlocks.add(p);
+                    }
+                }
+            }
+        }
     }
     
-    // Рисование заливки
-    private void drawBoxFill(MatrixStack matrices, Box box, Color color) {
-        Tessellator tessellator = Tessellator.getInstance();
-        BufferBuilder buffer = tessellator.getBuffer();
+    private void scanNearbyLeaves(MinecraftClient client, BlockPos center) {
+        leavesBlocks.clear();
         
-        MatrixStack.Entry entry = matrices.peek();
-        var matrix = entry.getPositionMatrix();
+        for (int dx = -10; dx <= 10; dx++) {
+            for (int dy = -10; dy <= 10; dy++) {
+                for (int dz = -10; dz <= 10; dz++) {
+                    BlockPos p = center.add(dx, dy, dz);
+                    String name = client.world.getBlockState(p).getBlock().getName().getString().toLowerCase();
+                    
+                    if (name.contains("leaves")) {
+                        leavesBlocks.add(p);
+                    }
+                }
+            }
+        }
+    }
+
+    // ========== 1. ПОСАДКА САЖЕНЦА ==========
+    private void plantSapling(MinecraftClient client) {
+        int slot = findSaplingInHotbar(client);
+        if (slot == -1) {
+            client.player.sendMessage(Text.literal("§cНет саженца в хот баре!"), true);
+            return;
+        }
         
-        buffer.begin(VertexFormat.DrawMode.QUADS, VertexFormats.POSITION_COLOR);
+        client.player.getInventory().selectedSlot = slot;
+        BlockPos plantPos = client.player.getBlockPos().down().up();
         
-        Vec3d cameraPos = MinecraftClient.getInstance().gameRenderer.getCamera().getPos();
-        double x = box.minX - cameraPos.x;
-        double y = box.minY - cameraPos.y;
-        double z = box.minZ - cameraPos.z;
-        double w = box.maxX - box.minX;
-        double h = box.maxY - box.minY;
+        if (client.world.getBlockState(plantPos).isAir()) {
+            Vec3d hitPos = new Vec3d(plantPos.getX() + 0.5, plantPos.getY() + 0.5, plantPos.getZ() + 0.5);
+            BlockHitResult hit = new BlockHitResult(hitPos, Direction.UP, plantPos, false);
+            client.interactionManager.interactBlock(client.player, Hand.MAIN_HAND, hit);
+            saplingPos = plantPos;
+            currentStage = Stage.USE_BONE_MEAL;
+            boneMealAttempts = 0;
+            actionDelay = 10;
+            client.player.sendMessage(Text.literal("§a🌱 Саженец посажен!"), true);
+        }
+    }
+
+    // ========== 2. КОСТНАЯ МУКА (ДО РОСТА) ==========
+    private void useBoneMeal(MinecraftClient client) {
+        if (saplingPos == null) {
+            currentStage = Stage.CHECK_AREA;
+            return;
+        }
         
-        float r = color.getRed() / 255f;
-        float g = color.getGreen() / 255f;
-        float b = color.getBlue() / 255f;
-        float a = color.getAlpha() / 255f;
+        int slot = findBoneMealInInventory(client);
+        if (slot == -1) {
+            client.player.sendMessage(Text.literal("§cНет костной муки в инвентаре!"), true);
+            return;
+        }
         
-        // Передняя грань
-        buffer.vertex(matrix, (float)x, (float)y, (float)z).color(r, g, b, a).next();
-        buffer.vertex(matrix, (float)(x + w), (float)y, (float)z).color(r, g, b, a).next();
-        buffer.vertex(matrix, (float)(x + w), (float)(y + h), (float)z).color(r, g, b, a).next();
-        buffer.vertex(matrix, (float)x, (float)(y + h), (float)z).color(r, g, b, a).next();
+        int prevSlot = client.player.getInventory().selectedSlot;
+        // Перекладываем костную муку в хот бар если её там нет
+        if (slot >= 9) {
+            // Меняем местами с первым слотом
+            var hotbarStack = client.player.getInventory().getStack(0);
+            var boneMealStack = client.player.getInventory().getStack(slot);
+            client.player.getInventory().setStack(0, boneMealStack);
+            client.player.getInventory().setStack(slot, hotbarStack);
+            slot = 0;
+        }
         
-        // Задняя грань
-        buffer.vertex(matrix, (float)x, (float)y, (float)(z + w)).color(r, g, b, a).next();
-        buffer.vertex(matrix, (float)x, (float)(y + h), (float)(z + w)).color(r, g, b, a).next();
-        buffer.vertex(matrix, (float)(x + w), (float)(y + h), (float)(z + w)).color(r, g, b, a).next();
-        buffer.vertex(matrix, (float)(x + w), (float)y, (float)(z + w)).color(r, g, b, a).next();
+        client.player.getInventory().selectedSlot = slot;
         
-        // Левая грань
-        buffer.vertex(matrix, (float)x, (float)y, (float)z).color(r, g, b, a).next();
-        buffer.vertex(matrix, (float)x, (float)(y + h), (float)z).color(r, g, b, a).next();
-        buffer.vertex(matrix, (float)x, (float)(y + h), (float)(z + w)).color(r, g, b, a).next();
-        buffer.vertex(matrix, (float)x, (float)y, (float)(z + w)).color(r, g, b, a).next();
+        Vec3d hitPos = new Vec3d(saplingPos.getX() + 0.5, saplingPos.getY() + 0.5, saplingPos.getZ() + 0.5);
+        BlockHitResult hit = new BlockHitResult(hitPos, Direction.UP, saplingPos, false);
+        client.interactionManager.interactBlock(client.player, Hand.MAIN_HAND, hit);
+        boneMealAttempts++;
         
-        // Правая грань
-        buffer.vertex(matrix, (float)(x + w), (float)y, (float)z).color(r, g, b, a).next();
-        buffer.vertex(matrix, (float)(x + w), (float)y, (float)(z + w)).color(r, g, b, a).next();
-        buffer.vertex(matrix, (float)(x + w), (float)(y + h), (float)(z + w)).color(r, g, b, a).next();
-        buffer.vertex(matrix, (float)(x + w), (float)(y + h), (float)z).color(r, g, b, a).next();
+        client.player.getInventory().selectedSlot = prevSlot;
+        actionDelay = 5;
         
-        // Верхняя грань
-        buffer.vertex(matrix, (float)x, (float)(y + h), (float)z).color(r, g, b, a).next();
-        buffer.vertex(matrix, (float)(x + w), (float)(y + h), (float)z).color(r, g, b, a).next();
-        buffer.vertex(matrix, (float)(x + w), (float)(y + h), (float)(z + w)).color(r, g, b, a).next();
-        buffer.vertex(matrix, (float)x, (float)(y + h), (float)(z + w)).color(r, g, b, a).next();
+        // Проверяем выросло ли дерево
+        new Thread(() -> {
+            try {
+                Thread.sleep(200);
+                MinecraftClient.getInstance().execute(() -> {
+                    scanTree(client, saplingPos);
+                    if (!woodBlocks.isEmpty()) {
+                        currentStage = Stage.BREAK_LEAVES;
+                        client.player.sendMessage(Text.literal("§a🌲 Дерево выросло! Блоков дуба: " + woodBlocks.size() + ", листвы: " + leavesBlocks.size()), true);
+                    } else if (boneMealAttempts > 30) {
+                        client.player.sendMessage(Text.literal("§cНе удалось вырастить дерево!"), true);
+                        currentStage = Stage.CHECK_AREA;
+                    }
+                });
+            } catch (InterruptedException e) {}
+        }).start();
+    }
+
+    // ========== 3. ЛИСТВА МОТЫГОЙ ==========
+    private void breakLeaves(MinecraftClient client) {
+        int slot = findHoeInHotbar(client);
+        if (slot == -1) {
+            client.player.sendMessage(Text.literal("§cНет мотыги в хот баре!"), true);
+            return;
+        }
         
-        // Нижняя грань
-        buffer.vertex(matrix, (float)x, (float)y, (float)z).color(r, g, b, a).next();
-        buffer.vertex(matrix, (float)x, (float)y, (float)(z + w)).color(r, g, b, a).next();
-        buffer.vertex(matrix, (float)(x + w), (float)y, (float)(z + w)).color(r, g, b, a).next();
-        buffer.vertex(matrix, (float)(x + w), (float)y, (float)z).color(r, g, b, a).next();
+        if (leavesBlocks.isEmpty()) {
+            currentStage = Stage.CHOP_WOOD;
+            client.player.sendMessage(Text.literal("§a✅ Вся листва срублена! Беру топор..."), true);
+            return;
+        }
         
-        tessellator.draw();
+        int prevSlot = client.player.getInventory().selectedSlot;
+        client.player.getInventory().selectedSlot = slot;
+        
+        // Ломаем до 5 блоков листвы за раз (для плавности)
+        int broken = 0;
+        while (!leavesBlocks.isEmpty() && broken < 5) {
+            BlockPos pos = leavesBlocks.poll();
+            if (!client.world.getBlockState(pos).isAir()) {
+                client.interactionManager.attackBlock(pos, Direction.UP);
+                client.player.swingHand(Hand.MAIN_HAND);
+                broken++;
+            }
+        }
+        
+        client.player.getInventory().selectedSlot = prevSlot;
+        actionDelay = 3;
+        
+        if (leavesBlocks.size() % 10 == 0) {
+            client.player.sendMessage(Text.literal("§7🍃 Листва: осталось " + leavesBlocks.size()), true);
+        }
+    }
+
+    // ========== 4. ДУБ ТОПОРОМ ==========
+    private void chopWood(MinecraftClient client) {
+        int slot = findAxeInHotbar(client);
+        if (slot == -1) {
+            client.player.sendMessage(Text.literal("§cНет топора в хот баре!"), true);
+            return;
+        }
+        
+        if (woodBlocks.isEmpty()) {
+            // Цикл завершён
+            currentStage = Stage.CHECK_AREA;
+            saplingPos = null;
+            client.player.sendMessage(Text.literal("§a🎉 Дерево полностью обработано! Проверяю радиус..."), true);
+            return;
+        }
+        
+        int prevSlot = client.player.getInventory().selectedSlot;
+        client.player.getInventory().selectedSlot = slot;
+        
+        // Ломаем до 5 блоков дуба за раз
+        int broken = 0;
+        while (!woodBlocks.isEmpty() && broken < 5) {
+            BlockPos pos = woodBlocks.poll();
+            if (!client.world.getBlockState(pos).isAir()) {
+                client.interactionManager.attackBlock(pos, Direction.UP);
+                client.player.swingHand(Hand.MAIN_HAND);
+                broken++;
+            }
+        }
+        
+        client.player.getInventory().selectedSlot = prevSlot;
+        actionDelay = 3;
+        
+        if (woodBlocks.size() % 5 == 0) {
+            client.player.sendMessage(Text.literal("§7🪓 Дуб: осталось " + woodBlocks.size() + " блоков"), true);
+        }
+    }
+
+    // ========== СКАНИРОВАНИЕ ВЫРОСШЕГО ДЕРЕВА ==========
+    private void scanTree(MinecraftClient client, BlockPos start) {
+        woodBlocks.clear();
+        leavesBlocks.clear();
+        
+        Queue<BlockPos> queue = new LinkedList<>();
+        Set<BlockPos> visited = new HashSet<>();
+        queue.add(start);
+        
+        while (!queue.isEmpty()) {
+            BlockPos pos = queue.poll();
+            if (visited.contains(pos)) continue;
+            visited.add(pos);
+            
+            for (int dx = -5; dx <= 5; dx++) {
+                for (int dy = -5; dy <= 10; dy++) {
+                    for (int dz = -5; dz <= 5; dz++) {
+                        BlockPos p = pos.add(dx, dy, dz);
+                        if (visited.contains(p)) continue;
+                        String name = client.world.getBlockState(p).getBlock().getName().getString().toLowerCase();
+                        
+                        if (name.contains("log") || name.contains("wood")) {
+                            woodBlocks.add(p);
+                            queue.add(p);
+                        }
+                        else if (name.contains("leaves")) {
+                            leavesBlocks.add(p);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // ========== ПОИСК В ХОТ БАРЕ ==========
+    private int findSaplingInHotbar(MinecraftClient client) {
+        Item[] saplings = {Items.OAK_SAPLING, Items.SPRUCE_SAPLING, Items.BIRCH_SAPLING, 
+                           Items.JUNGLE_SAPLING, Items.ACACIA_SAPLING, Items.DARK_OAK_SAPLING,
+                           Items.MANGROVE_PROPAGULE, Items.CHERRY_SAPLING};
+        for (int i = 0; i < 9; i++) {
+            Item item = client.player.getInventory().getStack(i).getItem();
+            for (Item s : saplings) if (item == s) return i;
+        }
+        return -1;
+    }
+    
+    private int findAxeInHotbar(MinecraftClient client) {
+        for (int i = 0; i < 9; i++) {
+            if (client.player.getInventory().getStack(i).getItem() instanceof AxeItem) {
+                return i;
+            }
+        }
+        return -1;
+    }
+    
+    private int findHoeInHotbar(MinecraftClient client) {
+        for (int i = 0; i < 9; i++) {
+            if (client.player.getInventory().getStack(i).getItem() instanceof HoeItem) {
+                return i;
+            }
+        }
+        return -1;
+    }
+    
+    private int findBoneMealInInventory(MinecraftClient client) {
+        for (int i = 0; i < 36; i++) {
+            if (client.player.getInventory().getStack(i).getItem() == Items.BONE_MEAL) {
+                return i;
+            }
+        }
+        return -1;
     }
 }
